@@ -5,30 +5,17 @@ import { z } from "zod";
 // ---------------------------------------------------------------------------
 // Configuration constants — easy to correct in one place.
 //
-// These names are intentionally surfaced here (rather than buried inline) so
-// that the Supabase RPC name, its parameter name, and the response field names
-// can be adjusted quickly once the real schema is confirmed.
+// TEA scores/scorecards come from real Supabase Edge Functions (Bearer
+// API-key auth). FMCSA QCMobile remains the source of truth for legal name,
+// authority status, MC/docket, and out-of-service status.
 // ---------------------------------------------------------------------------
 
-// Supabase RPC that returns the TEA carrier vetting score.
-// NOTE: placeholder name per request — confirm the real RPC name and update here.
-const RPC_CARRIER_VETTING_SCORE = "carrier_vetting_score";
+// Base path for the Supabase Edge Functions, appended to SUPABASE_URL.
+const FUNCTIONS_BASE_PATH = "/functions/v1";
 
-// Body parameter name passed to the RPC that carries the DOT number.
-const RPC_PARAM_DOT_NUMBER = "dot_number";
-
-// Candidate keys to look for the overall 0-100 score in the RPC response.
-const SCORE_OVERALL_KEYS = [
-	"overall_score",
-	"overallScore",
-	"score",
-	"overall",
-	"total_score",
-	"tea_score",
-];
-
-// Candidate keys that may hold the per-category breakdown object/array.
-const SCORE_CATEGORIES_KEYS = ["categories", "category_scores", "breakdown"];
+// Edge Function names.
+const FN_CARRIER_SCORE = "carrier_score";
+const FN_CARRIER_LOOKUP = "carrier_lookup";
 
 // FMCSA QCMobile live carrier endpoint (identity / authority / OOS status).
 // The DOT number and webKey are interpolated at call time.
@@ -46,6 +33,7 @@ declare global {
 			SUPABASE_URL: string;
 			SUPABASE_KEY: string;
 			QCMOBILE_WEBKEY: string;
+			TEA_API_KEY: string;
 		}
 	}
 }
@@ -81,48 +69,48 @@ function requireSecret(value: string | undefined, name: string): string {
 	return value;
 }
 
-/** Pick the first defined value among candidate keys on an object. */
-function pickFirst(obj: Record<string, unknown>, keys: string[]): unknown {
-	for (const key of keys) {
-		if (obj[key] !== undefined && obj[key] !== null) return obj[key];
-	}
-	return undefined;
+/** Format a possibly-missing value for display. */
+function fmt(value: unknown): string {
+	if (value === undefined || value === null || value === "") return "N/A";
+	if (typeof value === "boolean") return value ? "Yes" : "No";
+	return String(value);
 }
 
 /**
- * Call the Supabase TEA vetting-score RPC for a DOT number and return the
- * parsed JSON payload (object). Throws a friendly error on failure.
+ * Call a TEA Supabase Edge Function for a DOT number (Bearer API-key auth) and
+ * return the parsed JSON object. Throws a friendly error on failure.
  */
-async function fetchVettingScore(
+async function fetchEdgeFunction(
 	env: Cloudflare.Env,
+	functionName: string,
 	dotNumber: string,
 ): Promise<Record<string, unknown>> {
 	const supabaseUrl = requireSecret(env.SUPABASE_URL, "SUPABASE_URL");
-	const supabaseKey = requireSecret(env.SUPABASE_KEY, "SUPABASE_KEY");
+	const teaApiKey = requireSecret(env.TEA_API_KEY, "TEA_API_KEY");
 
-	const url = `${supabaseUrl.replace(/\/+$/, "")}/rest/v1/rpc/${RPC_CARRIER_VETTING_SCORE}`;
+	const url = `${supabaseUrl.replace(/\/+$/, "")}${FUNCTIONS_BASE_PATH}/${functionName}/${encodeURIComponent(
+		dotNumber,
+	)}`;
 
 	let resp: Response;
 	try {
 		resp = await fetch(url, {
-			method: "POST",
+			method: "GET",
 			headers: {
-				"Content-Type": "application/json",
-				apikey: supabaseKey,
-				Authorization: `Bearer ${supabaseKey}`,
+				Accept: "application/json",
+				Authorization: `Bearer ${teaApiKey}`,
 			},
-			body: JSON.stringify({ [RPC_PARAM_DOT_NUMBER]: dotNumber }),
 		});
 	} catch (e) {
 		throw new Error(
-			`Could not reach the TEA scoring service: ${(e as Error).message}`,
+			`Could not reach the TEA service (${functionName}): ${(e as Error).message}`,
 		);
 	}
 
 	const raw = await resp.text();
 	if (!resp.ok) {
 		throw new Error(
-			`TEA scoring service returned ${resp.status} ${resp.statusText}: ${raw.slice(0, 300)}`,
+			`TEA service (${functionName}) returned ${resp.status} ${resp.statusText}: ${raw.slice(0, 300)}`,
 		);
 	}
 
@@ -130,27 +118,16 @@ async function fetchVettingScore(
 	try {
 		parsed = raw ? JSON.parse(raw) : null;
 	} catch {
-		throw new Error("TEA scoring service returned a response that was not valid JSON.");
+		throw new Error(
+			`TEA service (${functionName}) returned a response that was not valid JSON.`,
+		);
 	}
 
-	// Supabase RPCs may return a scalar, an object, or a single-element array.
 	if (Array.isArray(parsed)) parsed = parsed[0];
-	if (parsed === null || parsed === undefined) {
-		throw new Error(`No TEA score was found for DOT ${dotNumber}.`);
-	}
-	if (typeof parsed === "number") {
-		return { [SCORE_OVERALL_KEYS[0]]: parsed };
-	}
-	if (typeof parsed !== "object") {
-		return { [SCORE_OVERALL_KEYS[0]]: parsed };
+	if (parsed === null || parsed === undefined || typeof parsed !== "object") {
+		throw new Error(`No TEA data was found for DOT ${dotNumber}.`);
 	}
 	return parsed as Record<string, unknown>;
-}
-
-/** Extract the overall 0-100 score from an RPC payload, if present. */
-function extractOverallScore(payload: Record<string, unknown>): string {
-	const score = pickFirst(payload, SCORE_OVERALL_KEYS);
-	return score === undefined ? "N/A" : String(score);
 }
 
 // ---------------------------------------------------------------------------
@@ -167,13 +144,13 @@ export class MyMCP extends McpAgent {
 	async init() {
 		// -------------------------------------------------------------------
 		// Tool 1 — lookup_carrier
-		// Live FMCSA QCMobile identity/authority/OOS + TEA overall score.
+		// Live FMCSA QCMobile identity/authority/OOS + TEA score & risk tier.
 		// -------------------------------------------------------------------
 		this.server.registerTool(
 			"lookup_carrier",
 			{
 				description:
-					"Look up a motor carrier's live FMCSA identity, operating authority, MC number, and out-of-service status (from the QCMobile API), plus the TEA overall vetting score (0-100).",
+					"Look up a motor carrier's live FMCSA identity, operating authority, MC number, and out-of-service status (from the QCMobile API), plus the TEA score and risk tier.",
 				inputSchema: {
 					dot_number: z.string().describe("USDOT number of the carrier (required)."),
 					mc_number: z
@@ -242,11 +219,13 @@ export class MyMCP extends McpAgent {
 					? `OUT OF SERVICE (since ${oosDate})`
 					: "Not out of service";
 
-				// --- TEA overall score (from Supabase) ---
+				// --- TEA score & risk tier (from Supabase Edge Function) ---
 				let teaScore = "N/A";
+				let riskTier = "N/A";
 				try {
-					const payload = await fetchVettingScore(env, dot_number);
-					teaScore = extractOverallScore(payload);
+					const payload = await fetchEdgeFunction(env, FN_CARRIER_SCORE, dot_number);
+					teaScore = fmt(payload.tea_score);
+					riskTier = fmt(payload.risk_tier);
 				} catch (e) {
 					teaScore = `Unavailable (${(e as Error).message})`;
 				}
@@ -257,7 +236,8 @@ export class MyMCP extends McpAgent {
 					`MC Number: ${mc}`,
 					`Authority Status: ${authority}`,
 					`Out-of-Service Status: ${oosStatus}`,
-					`TEA Overall Score (0-100): ${teaScore}`,
+					`TEA Score: ${teaScore}`,
+					`Risk Tier: ${riskTier}`,
 				].join("\n");
 
 				return textResult(summary);
@@ -266,13 +246,13 @@ export class MyMCP extends McpAgent {
 
 		// -------------------------------------------------------------------
 		// Tool 2 — carrier_vetting_scorecard
-		// TEA overall score plus the five category breakdowns.
+		// Full TEA scorecard from the carrier_lookup Edge Function.
 		// -------------------------------------------------------------------
 		this.server.registerTool(
 			"carrier_vetting_scorecard",
 			{
 				description:
-					"Return the TEA carrier vetting scorecard for a DOT number: the overall 0-100 score plus the category breakdowns.",
+					"Return the full TEA carrier vetting scorecard for a DOT number: overall TEA score and risk tier, a Safety section, and a Flags section.",
 				inputSchema: {
 					dot_number: z.string().describe("USDOT number of the carrier (required)."),
 				},
@@ -282,56 +262,39 @@ export class MyMCP extends McpAgent {
 
 				let payload: Record<string, unknown>;
 				try {
-					payload = await fetchVettingScore(env, dot_number);
+					payload = await fetchEdgeFunction(env, FN_CARRIER_LOOKUP, dot_number);
 				} catch (e) {
 					return errorResult((e as Error).message);
 				}
 
-				const overall = extractOverallScore(payload);
-
-				// Find the category breakdown — either under a known key, or by
-				// treating remaining object/numeric fields as categories.
-				let categories = pickFirst(payload, SCORE_CATEGORIES_KEYS) as
-					| Record<string, unknown>
-					| unknown[]
-					| undefined;
-
-				if (categories === undefined) {
-					const rest: Record<string, unknown> = {};
-					for (const [k, v] of Object.entries(payload)) {
-						if (SCORE_OVERALL_KEYS.includes(k)) continue;
-						rest[k] = v;
-					}
-					if (Object.keys(rest).length > 0) categories = rest;
-				}
+				const flags = (payload.flags as Record<string, unknown>) ?? {};
+				const safety = (payload.safety as Record<string, unknown>) ?? {};
 
 				const lines: string[] = [
 					`TEA Carrier Vetting Scorecard — DOT ${dot_number}`,
-					`Overall Score (0-100): ${overall}`,
+					`Legal Name: ${fmt(payload.legal_name)}`,
+					`Status: ${fmt(payload.status)}`,
+					`Officer: ${fmt(payload.officer)}`,
 					"",
-					"Category Breakdown:",
+					`Overall TEA Score: ${fmt(payload.tea_score)}`,
+					`Risk Tier: ${fmt(payload.risk_tier)}`,
+					"",
+					"Safety:",
+					`  Total Inspections: ${fmt(safety.total_inspections)}`,
+					`  Total Violations: ${fmt(safety.total_violations)}`,
+					`  Total Out-of-Service: ${fmt(safety.total_oos)}`,
+					`  Crash Count: ${fmt(safety.crash_count)}`,
+					`  Recordable Crash Rate: ${fmt(safety.recordable_crash_rate)}`,
+					"",
+					"Flags:",
+					`  ELD Connection: ${fmt(flags.eld_connection)}`,
+					`  ELD Company: ${fmt(flags.eld_company)}`,
+					`  ELD Identifier: ${fmt(flags.eld_identifier)}`,
+					`  ELD Revocation: ${fmt(flags.eld_revocation)}`,
+					`  Reincarnation Watch: ${fmt(flags.reincarnation_watch)}`,
+					`  Prior Revoke: ${fmt(flags.prior_revoke)}`,
+					`  Vault Match: ${fmt(flags.vault_match)}`,
 				];
-
-				if (Array.isArray(categories)) {
-					for (const item of categories) {
-						if (item && typeof item === "object") {
-							const o = item as Record<string, unknown>;
-							const label = o.name ?? o.category ?? o.label ?? "Category";
-							const value = o.score ?? o.value ?? o.points ?? JSON.stringify(o);
-							lines.push(`  - ${label}: ${value}`);
-						} else {
-							lines.push(`  - ${item}`);
-						}
-					}
-				} else if (categories && typeof categories === "object") {
-					for (const [k, v] of Object.entries(categories)) {
-						const value =
-							v && typeof v === "object" ? JSON.stringify(v) : String(v);
-						lines.push(`  - ${k}: ${value}`);
-					}
-				} else {
-					lines.push("  (No category breakdown was returned.)");
-				}
 
 				return textResult(lines.join("\n"));
 			},
