@@ -162,6 +162,36 @@ export class MyMCP extends McpAgent {
 			async ({ dot_number, mc_number }) => {
 				const env = this.env as Cloudflare.Env;
 
+				// --- TEMPORARY DEBUG (names only — never log secret values) -------
+				// Reports which expected bindings the Durable Object runtime can
+				// actually see on `this.env`, so we can tell a missing/misnamed
+				// binding apart from a code-access bug. Remove once verified.
+				const envForDebug = env as unknown as Record<string, unknown>;
+				const EXPECTED_KEYS = [
+					"SUPABASE_URL",
+					"SUPABASE_KEY",
+					"QCMOBILE_WEBKEY",
+					"TEA_API_KEY",
+				];
+				const presentExpected = EXPECTED_KEYS.filter(
+					(k) => envForDebug[k] != null && envForDebug[k] !== "",
+				);
+				const relatedKeyNames = Object.keys(envForDebug)
+					.filter((k) => /SUPABASE|QCMOBILE|TEA/i.test(k))
+					.sort();
+				console.log(
+					"[lookup_carrier debug] expected keys present:",
+					JSON.stringify(presentExpected),
+				);
+				console.log(
+					"[lookup_carrier debug] related env key names:",
+					JSON.stringify(relatedKeyNames),
+				);
+				console.log(
+					"[lookup_carrier debug] total env key count:",
+					Object.keys(envForDebug).length,
+				);
+
 				// --- Live FMCSA QCMobile lookup (never from Supabase) ---
 				let carrier: Record<string, unknown> = {};
 				try {
