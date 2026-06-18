@@ -250,14 +250,39 @@ export class MyMCP extends McpAgent {
 					: "Not out of service";
 
 				// --- TEA score & risk tier (from Supabase Edge Function) ---
+				// TEMPORARY FULL VISIBILITY: do a direct fetch (no swallowing) and
+				// surface the raw HTTP status and body so we can see exactly what
+				// carrier_score returns. Revert to fetchEdgeFunction once fixed.
 				let teaScore = "N/A";
 				let riskTier = "N/A";
-				try {
-					const payload = await fetchEdgeFunction(env, FN_CARRIER_SCORE, dot_number);
-					teaScore = fmt(payload.tea_score);
-					riskTier = fmt(payload.risk_tier);
-				} catch (e) {
-					teaScore = `Unavailable (${(e as Error).message})`;
+				let scoreStatus = "no-request";
+				let scoreRaw = "";
+				const supabaseUrl = requireSecret(env.SUPABASE_URL, "SUPABASE_URL");
+				const teaApiKey = requireSecret(env.TEA_API_KEY, "TEA_API_KEY");
+				const scoreUrl = `${supabaseUrl.replace(/\/+$/, "")}${FUNCTIONS_BASE_PATH}/${FN_CARRIER_SCORE}/${encodeURIComponent(
+					dot_number,
+				)}`;
+				const scoreResp = await fetch(scoreUrl, {
+					method: "GET",
+					headers: {
+						Accept: "application/json",
+						Authorization: `Bearer ${teaApiKey}`,
+					},
+				});
+				scoreStatus = `${scoreResp.status} ${scoreResp.statusText}`;
+				scoreRaw = await scoreResp.text();
+				if (scoreResp.ok && scoreRaw) {
+					try {
+						let parsed: unknown = JSON.parse(scoreRaw);
+						if (Array.isArray(parsed)) parsed = parsed[0];
+						if (parsed && typeof parsed === "object") {
+							const payload = parsed as Record<string, unknown>;
+							teaScore = fmt(payload.tea_score);
+							riskTier = fmt(payload.risk_tier);
+						}
+					} catch {
+						// Leave teaScore/riskTier as N/A; raw body is surfaced below.
+					}
 				}
 
 				const summary = [
@@ -268,6 +293,9 @@ export class MyMCP extends McpAgent {
 					`Out-of-Service Status: ${oosStatus}`,
 					`TEA Score: ${teaScore}`,
 					`Risk Tier: ${riskTier}`,
+					`DEBUG score_url: ${scoreUrl}`,
+					`DEBUG score_status: ${scoreStatus}`,
+					`DEBUG score_raw: ${scoreRaw.slice(0, 500)}`,
 				].join("\n");
 
 				return textResult(summary);
