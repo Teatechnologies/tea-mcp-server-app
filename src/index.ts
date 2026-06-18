@@ -150,7 +150,7 @@ export class MyMCP extends McpAgent {
 			"lookup_carrier",
 			{
 				description:
-					"Look up a motor carrier's live FMCSA identity, operating authority, MC number, and out-of-service status (from the QCMobile API), plus the TEA score and risk tier.",
+					"Look up a motor carrier's live FMCSA identity, operating authority, MC number, and out-of-service status (from the QCMobile API), plus the TEA risk score (lower = safer) and risk tier.",
 				inputSchema: {
 					dot_number: z.string().describe("USDOT number of the carrier (required)."),
 					mc_number: z
@@ -161,36 +161,6 @@ export class MyMCP extends McpAgent {
 			},
 			async ({ dot_number, mc_number }) => {
 				const env = this.env as Cloudflare.Env;
-
-				// --- TEMPORARY DEBUG (names only — never log secret values) -------
-				// Reports which expected bindings the Durable Object runtime can
-				// actually see on `this.env`, so we can tell a missing/misnamed
-				// binding apart from a code-access bug. Remove once verified.
-				const envForDebug = env as unknown as Record<string, unknown>;
-				const EXPECTED_KEYS = [
-					"SUPABASE_URL",
-					"SUPABASE_KEY",
-					"QCMOBILE_WEBKEY",
-					"TEA_API_KEY",
-				];
-				const presentExpected = EXPECTED_KEYS.filter(
-					(k) => envForDebug[k] != null && envForDebug[k] !== "",
-				);
-				const relatedKeyNames = Object.keys(envForDebug)
-					.filter((k) => /SUPABASE|QCMOBILE|TEA/i.test(k))
-					.sort();
-				console.log(
-					"[lookup_carrier debug] expected keys present:",
-					JSON.stringify(presentExpected),
-				);
-				console.log(
-					"[lookup_carrier debug] related env key names:",
-					JSON.stringify(relatedKeyNames),
-				);
-				console.log(
-					"[lookup_carrier debug] total env key count:",
-					Object.keys(envForDebug).length,
-				);
 
 				// --- Live FMCSA QCMobile lookup (never from Supabase) ---
 				let carrier: Record<string, unknown> = {};
@@ -249,40 +219,15 @@ export class MyMCP extends McpAgent {
 					? `OUT OF SERVICE (since ${oosDate})`
 					: "Not out of service";
 
-				// --- TEA score & risk tier (from Supabase Edge Function) ---
-				// TEMPORARY FULL VISIBILITY: do a direct fetch (no swallowing) and
-				// surface the raw HTTP status and body so we can see exactly what
-				// carrier_score returns. Revert to fetchEdgeFunction once fixed.
+				// --- TEA risk score & risk tier (from Supabase Edge Function) ---
 				let teaScore = "N/A";
 				let riskTier = "N/A";
-				let scoreStatus = "no-request";
-				let scoreRaw = "";
-				const supabaseUrl = requireSecret(env.SUPABASE_URL, "SUPABASE_URL");
-				const teaApiKey = requireSecret(env.TEA_API_KEY, "TEA_API_KEY");
-				const scoreUrl = `${supabaseUrl.replace(/\/+$/, "")}${FUNCTIONS_BASE_PATH}/${FN_CARRIER_SCORE}/${encodeURIComponent(
-					dot_number,
-				)}`;
-				const scoreResp = await fetch(scoreUrl, {
-					method: "GET",
-					headers: {
-						Accept: "application/json",
-						Authorization: `Bearer ${teaApiKey}`,
-					},
-				});
-				scoreStatus = `${scoreResp.status} ${scoreResp.statusText}`;
-				scoreRaw = await scoreResp.text();
-				if (scoreResp.ok && scoreRaw) {
-					try {
-						let parsed: unknown = JSON.parse(scoreRaw);
-						if (Array.isArray(parsed)) parsed = parsed[0];
-						if (parsed && typeof parsed === "object") {
-							const payload = parsed as Record<string, unknown>;
-							teaScore = fmt(payload.tea_score);
-							riskTier = fmt(payload.risk_tier);
-						}
-					} catch {
-						// Leave teaScore/riskTier as N/A; raw body is surfaced below.
-					}
+				try {
+					const payload = await fetchEdgeFunction(env, FN_CARRIER_SCORE, dot_number);
+					teaScore = fmt(payload.tea_score);
+					riskTier = fmt(payload.risk_tier);
+				} catch (e) {
+					teaScore = `Unavailable (${(e as Error).message})`;
 				}
 
 				const summary = [
@@ -291,11 +236,9 @@ export class MyMCP extends McpAgent {
 					`MC Number: ${mc}`,
 					`Authority Status: ${authority}`,
 					`Out-of-Service Status: ${oosStatus}`,
-					`TEA Score: ${teaScore}`,
+					// Risk score: lower = safer (e.g. 15.4 is lower-risk than 23).
+					`TEA Risk Score (lower = safer): ${teaScore}`,
 					`Risk Tier: ${riskTier}`,
-					`DEBUG score_url: ${scoreUrl}`,
-					`DEBUG score_status: ${scoreStatus}`,
-					`DEBUG score_raw: ${scoreRaw.slice(0, 500)}`,
 				].join("\n");
 
 				return textResult(summary);
