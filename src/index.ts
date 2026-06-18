@@ -16,6 +16,8 @@ const FUNCTIONS_BASE_PATH = "/functions/v1";
 // Edge Function names.
 const FN_CARRIER_SCORE = "carrier_score";
 const FN_CARRIER_LOOKUP = "carrier_lookup";
+// NOTE: this function name uses hyphens, not underscores.
+const FN_NEW_ENTRANT = "new-entrant-full-report";
 
 // FMCSA QCMobile live carrier endpoint (identity / authority / OOS status).
 // The DOT number and webKey are interpolated at call time.
@@ -74,6 +76,48 @@ function fmt(value: unknown): string {
 	if (value === undefined || value === null || value === "") return "N/A";
 	if (typeof value === "boolean") return value ? "Yes" : "No";
 	return String(value);
+}
+
+/** Turn a snake_case / kebab-case key into a readable Title Case label. */
+function prettyKey(key: string): string {
+	return key.replace(/[_-]+/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
+}
+
+/**
+ * Recursively render an arbitrary JSON value into readable, indented lines.
+ * Used by new_entrant_workup, whose report shape varies; missing/empty values
+ * fall back to the fmt() convention.
+ */
+function renderValue(value: unknown, indent: string): string[] {
+	if (value === undefined || value === null || value === "") {
+		return [`${indent}N/A`];
+	}
+	if (Array.isArray(value)) {
+		if (value.length === 0) return [`${indent}(none)`];
+		const out: string[] = [];
+		value.forEach((item, i) => {
+			if (item && typeof item === "object") {
+				out.push(`${indent}- [${i + 1}]`);
+				out.push(...renderValue(item, `${indent}    `));
+			} else {
+				out.push(`${indent}- ${fmt(item)}`);
+			}
+		});
+		return out;
+	}
+	if (typeof value === "object") {
+		const out: string[] = [];
+		for (const [k, v] of Object.entries(value as Record<string, unknown>)) {
+			if (v && typeof v === "object") {
+				out.push(`${indent}${prettyKey(k)}:`);
+				out.push(...renderValue(v, `${indent}  `));
+			} else {
+				out.push(`${indent}${prettyKey(k)}: ${fmt(v)}`);
+			}
+		}
+		return out;
+	}
+	return [`${indent}${fmt(value)}`];
 }
 
 /**
@@ -296,6 +340,140 @@ export class MyMCP extends McpAgent {
 					`  Prior Revoke: ${fmt(flags.prior_revoke)}`,
 					`  Vault Match: ${fmt(flags.vault_match)}`,
 				];
+
+				return textResult(lines.join("\n"));
+			},
+		);
+
+		// -------------------------------------------------------------------
+		// Tool 3 — new_entrant_workup
+		// Comprehensive FMCSA new-entrant fitness workup via the
+		// new-entrant-full-report Edge Function.
+		// -------------------------------------------------------------------
+		this.server.registerTool(
+			"new_entrant_workup",
+			{
+				description:
+					"Run a comprehensive FMCSA new-entrant fitness workup on a carrier by DOT number. Returns the full TEA new-entrant assessment — entity profile, authority/census, crashes, inspections, insurance, watchlists, network cross-references, the D1–D5 composite score and tier, and (if a Janus questionnaire exists) questionnaire contradiction analysis. Designed for federal investigators and FMCSA compliance reviews.",
+				inputSchema: {
+					dot_number: z.string().describe("USDOT number of the carrier (required)."),
+				},
+			},
+			async ({ dot_number }) => {
+				const env = this.env as Cloudflare.Env;
+
+				// The Edge Function needs an integer DOT — a string DOT was the
+				// bug we hit with carrier_score.
+				const dotInt = Number(dot_number);
+				if (!Number.isInteger(dotInt)) {
+					return errorResult(`DOT number must be numeric. Received: ${dot_number}`);
+				}
+
+				let supabaseUrl: string;
+				let teaApiKey: string;
+				try {
+					supabaseUrl = requireSecret(env.SUPABASE_URL, "SUPABASE_URL");
+					teaApiKey = requireSecret(env.TEA_API_KEY, "TEA_API_KEY");
+				} catch (e) {
+					return errorResult((e as Error).message);
+				}
+
+				const base = `${supabaseUrl.replace(/\/+$/, "")}${FUNCTIONS_BASE_PATH}/${FN_NEW_ENTRANT}`;
+				const authHeaders = {
+					Accept: "application/json",
+					Authorization: `Bearer ${teaApiKey}`,
+				};
+
+				// The request contract is not yet confirmed. Try POST (DOT +
+				// hasQuestionnaire flag in the body) first, then fall back to GET
+				// with the DOT in the path. The raw status + body are surfaced in
+				// a TEMPORARY DEBUG block below so we can confirm the real shape
+				// (remove once verified, as we did for carrier_score).
+				let usedMethod = "POST";
+				let status = "";
+				let raw = "";
+				try {
+					const postResp = await fetch(base, {
+						method: "POST",
+						headers: { ...authHeaders, "Content-Type": "application/json" },
+						body: JSON.stringify({ dot_number: dotInt, hasQuestionnaire: false }),
+					});
+					status = `${postResp.status} ${postResp.statusText}`;
+					raw = await postResp.text();
+					if (!postResp.ok) {
+						const getResp = await fetch(`${base}/${dotInt}`, {
+							method: "GET",
+							headers: authHeaders,
+						});
+						const getStatus = `${getResp.status} ${getResp.statusText}`;
+						const getRaw = await getResp.text();
+						if (getResp.ok) {
+							usedMethod = "GET";
+							status = getStatus;
+							raw = getRaw;
+						} else {
+							return textResult(
+								[
+									`TEA New-Entrant Fitness Workup — DOT ${dotInt}`,
+									"Could not retrieve the new-entrant report (both POST and GET failed).",
+									`DEBUG POST status: ${status}`,
+									`DEBUG POST body: ${raw.slice(0, 800)}`,
+									`DEBUG GET status: ${getStatus}`,
+									`DEBUG GET body: ${getRaw.slice(0, 800)}`,
+								].join("\n"),
+							);
+						}
+					}
+				} catch (e) {
+					return errorResult(
+						`Could not reach the TEA service (${FN_NEW_ENTRANT}): ${(e as Error).message}`,
+					);
+				}
+
+				let payload: Record<string, unknown> = {};
+				try {
+					let parsed: unknown = raw ? JSON.parse(raw) : null;
+					if (Array.isArray(parsed)) parsed = parsed[0];
+					if (parsed && typeof parsed === "object") {
+						payload = parsed as Record<string, unknown>;
+					}
+				} catch {
+					// Leave payload empty; the raw body is surfaced in DEBUG below.
+				}
+
+				// Locate the composite score and tier (best-guess keys, confirmed
+				// via the DEBUG block until the real shape is verified).
+				const COMPOSITE_KEYS = ["composite_score", "composite", "d_composite", "score"];
+				const TIER_KEYS = ["tier", "composite_tier", "risk_tier"];
+				const compositeKey = COMPOSITE_KEYS.find((k) => payload[k] !== undefined);
+				const tierKey = TIER_KEYS.find((k) => payload[k] !== undefined);
+				const composite = compositeKey ? payload[compositeKey] : undefined;
+				const tier = tierKey ? payload[tierKey] : undefined;
+				const compositeIsObject = composite !== null && typeof composite === "object";
+
+				const lines: string[] = [`TEA New-Entrant Fitness Workup — DOT ${dotInt}`];
+				if (compositeIsObject) {
+					lines.push("Composite Score (D1–D5):");
+					lines.push(...renderValue(composite, "  "));
+				} else {
+					lines.push(`Composite Score (D1–D5): ${fmt(composite)}`);
+				}
+				lines.push(`Tier: ${fmt(tier)}`, "");
+
+				// Narrative sections: render every other top-level section the
+				// report returns, whatever its shape.
+				const consumed = new Set<string>([compositeKey, tierKey].filter(Boolean) as string[]);
+				for (const [key, value] of Object.entries(payload)) {
+					if (consumed.has(key)) continue;
+					lines.push(`${prettyKey(key)}:`);
+					lines.push(...renderValue(value, "  "));
+					lines.push("");
+				}
+
+				// TEMPORARY: confirm method + response shape, then remove.
+				lines.push(`DEBUG method: ${usedMethod}`);
+				lines.push(`DEBUG status: ${status}`);
+				lines.push(`DEBUG raw (first 800 chars): ${raw.slice(0, 800)}`);
 
 				return textResult(lines.join("\n"));
 			},
