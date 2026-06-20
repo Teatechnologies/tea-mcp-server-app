@@ -20,13 +20,14 @@ const FN_CARRIER_LOOKUP = "carrier_lookup";
 const FN_NEW_ENTRANT = "new-entrant-full-report";
 // Gateway Edge Function: POST { rpc, params } -> { rpc, data, data_source, as_of }.
 const FN_GATEWAY = "tea-mcp-rpc";
+// Dedicated VIN-network Edge Function: POST { dot_number } -> full object (no "data" wrapper).
+const FN_VIN_NETWORK = "vin-network";
 
 // Gateway RPC names (kept here so they are easy to correct in one place).
 const RPC_INVESTIGATE_CARRIER = "investigate_carrier";
 const RPC_INVESTIGATE_OFFICER = "investigate_officer";
 const RPC_SAME_SESSION_FILINGS = "carrier_same_session_filings";
 const RPC_EXPOSURE_SIGNALS = "carrier_exposure_signals";
-const RPC_VIN_NETWORK = "get_vin_network";
 const RPC_VIN_TRANSITIONS = "get_vin_transitions";
 const RPC_CARRIER_VIN_DETAIL = "get_carrier_vin_detail";
 const RPC_ADDRESS_NETWORK = "get_address_network";
@@ -682,6 +683,9 @@ export class MyMCP extends McpAgent {
 
 		// -------------------------------------------------------------------
 		// Tool 8 — vin_network
+		// Uses the dedicated vin-network Edge Function directly (the gateway
+		// get_vin_network RPC is broken — missing vin_problem_child table).
+		// Response is the full object, NOT wrapped in a "data" field.
 		// -------------------------------------------------------------------
 		this.server.registerTool(
 			"vin_network",
@@ -694,14 +698,53 @@ export class MyMCP extends McpAgent {
 			},
 			async ({ dot_number }) => {
 				const env = this.env as Cloudflare.Env;
+
 				let data: Record<string, unknown>;
 				try {
-					data = await callGateway(env, RPC_VIN_NETWORK, {
-						p_dot_number: String(parseInt(dot_number, 10)),
+					const supabaseUrl = requireSecret(env.SUPABASE_URL, "SUPABASE_URL");
+					const teaApiKey = requireSecret(env.TEA_API_KEY, "TEA_API_KEY");
+					const url = `${supabaseUrl.replace(/\/+$/, "")}${FUNCTIONS_BASE_PATH}/${FN_VIN_NETWORK}`;
+
+					const resp = await fetch(url, {
+						method: "POST",
+						headers: {
+							Accept: "application/json",
+							"Content-Type": "application/json",
+							Authorization: `Bearer ${teaApiKey}`,
+						},
+						body: JSON.stringify({ dot_number }),
 					});
+
+					const raw = await resp.text();
+					if (!resp.ok) {
+						return errorResult(
+							`VIN-network service returned ${resp.status} ${resp.statusText}: ${raw.slice(0, 300)}`,
+						);
+					}
+
+					let parsed: unknown;
+					try {
+						parsed = raw ? JSON.parse(raw) : null;
+					} catch {
+						return errorResult("VIN-network service returned a response that was not valid JSON.");
+					}
+					if (parsed === null || typeof parsed !== "object") {
+						return errorResult(`No VIN-network data was found for DOT ${dot_number}.`);
+					}
+					// The response IS the payload (no "data" wrapper) — use it as-is.
+					data = parsed as Record<string, unknown>;
+					if (data.error) {
+						const err = data.error;
+						const message =
+							err && typeof err === "object"
+								? String((err as Record<string, unknown>).message ?? JSON.stringify(err))
+								: String(err);
+						return errorResult(`VIN-network service error: ${message}`);
+					}
 				} catch (e) {
 					return errorResult((e as Error).message);
 				}
+
 				const lines: string[] = [`VIN Network — DOT ${dot_number}`, ""];
 				lines.push(...renderValue(data, ""));
 				// TEMPORARY: confirm shape, then remove.
