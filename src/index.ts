@@ -26,6 +26,16 @@ const RPC_INVESTIGATE_CARRIER = "investigate_carrier";
 const RPC_INVESTIGATE_OFFICER = "investigate_officer";
 const RPC_SAME_SESSION_FILINGS = "carrier_same_session_filings";
 const RPC_EXPOSURE_SIGNALS = "carrier_exposure_signals";
+const RPC_VIN_NETWORK = "get_vin_network";
+const RPC_VIN_TRANSITIONS = "get_vin_transitions";
+const RPC_CARRIER_VIN_DETAIL = "get_carrier_vin_detail";
+const RPC_ADDRESS_NETWORK = "get_address_network";
+const RPC_REINCARNATION_NETWORK = "get_reincarnation_network";
+const RPC_CARRIER_EVENT_TIMELINE = "get_carrier_event_timeline";
+const RPC_CHAMELEON_RISK = "score_chameleon_risk";
+const RPC_NETWORK_SEARCH = "network_builder_search";
+const RPC_CARRIERS_BY_PHONE = "get_carriers_by_phone";
+const RPC_INVESTIGATE_DOT = "investigate_dot";
 
 // FMCSA QCMobile live carrier endpoint (identity / authority / OOS status).
 // The DOT number and webKey are interpolated at call time.
@@ -663,6 +673,315 @@ export class MyMCP extends McpAgent {
 					return errorResult((e as Error).message);
 				}
 				const lines: string[] = [`Carrier Exposure Signals — DOT ${dot_number}`, ""];
+				lines.push(...renderValue(data, ""));
+				// TEMPORARY: confirm shape, then remove.
+				lines.push("", `DEBUG data (first 800 chars): ${JSON.stringify(data).slice(0, 800)}`);
+				return textResult(lines.join("\n"));
+			},
+		);
+
+		// -------------------------------------------------------------------
+		// Tool 8 — vin_network
+		// -------------------------------------------------------------------
+		this.server.registerTool(
+			"vin_network",
+			{
+				description:
+					"Every VIN operated by this DOT and every other carrier that has used those VINs — the core VIN-crossover / clone-truck view.",
+				inputSchema: {
+					dot_number: z.string().describe("USDOT number of the carrier (required)."),
+				},
+			},
+			async ({ dot_number }) => {
+				const env = this.env as Cloudflare.Env;
+				let data: Record<string, unknown>;
+				try {
+					data = await callGateway(env, RPC_VIN_NETWORK, {
+						p_dot_number: String(parseInt(dot_number, 10)),
+					});
+				} catch (e) {
+					return errorResult((e as Error).message);
+				}
+				const lines: string[] = [`VIN Network — DOT ${dot_number}`, ""];
+				lines.push(...renderValue(data, ""));
+				// TEMPORARY: confirm shape, then remove.
+				lines.push("", `DEBUG data (first 800 chars): ${JSON.stringify(data).slice(0, 800)}`);
+				return textResult(lines.join("\n"));
+			},
+		);
+
+		// -------------------------------------------------------------------
+		// Tool 9 — vin_transitions
+		// -------------------------------------------------------------------
+		this.server.registerTool(
+			"vin_transitions",
+			{
+				description:
+					"VINs that moved from this DOT to a new DOT, with crash dates — surfaces equipment handed off to successor/chameleon carriers.",
+				inputSchema: {
+					dot_number: z.string().describe("USDOT number of the carrier (required)."),
+				},
+			},
+			async ({ dot_number }) => {
+				const env = this.env as Cloudflare.Env;
+				let data: Record<string, unknown>;
+				try {
+					data = await callGateway(env, RPC_VIN_TRANSITIONS, {
+						p_dot: String(parseInt(dot_number, 10)),
+					});
+				} catch (e) {
+					return errorResult((e as Error).message);
+				}
+				const lines: string[] = [`VIN Transitions — DOT ${dot_number}`, ""];
+				lines.push(...renderValue(data, ""));
+				// TEMPORARY: confirm shape, then remove.
+				lines.push("", `DEBUG data (first 800 chars): ${JSON.stringify(data).slice(0, 800)}`);
+				return textResult(lines.join("\n"));
+			},
+		);
+
+		// -------------------------------------------------------------------
+		// Tool 10 — carrier_vin_detail
+		// -------------------------------------------------------------------
+		this.server.registerTool(
+			"carrier_vin_detail",
+			{
+				description:
+					"Every VIN and plate operated by a DOT with inspection counts.",
+				inputSchema: {
+					dot_number: z.string().describe("USDOT number of the carrier (required)."),
+				},
+			},
+			async ({ dot_number }) => {
+				const env = this.env as Cloudflare.Env;
+				let data: Record<string, unknown>;
+				try {
+					data = await callGateway(env, RPC_CARRIER_VIN_DETAIL, {
+						target_dot: String(parseInt(dot_number, 10)),
+					});
+				} catch (e) {
+					return errorResult((e as Error).message);
+				}
+				const lines: string[] = [`Carrier VIN Detail — DOT ${dot_number}`, ""];
+				lines.push(...renderValue(data, ""));
+				// TEMPORARY: confirm shape, then remove.
+				lines.push("", `DEBUG data (first 800 chars): ${JSON.stringify(data).slice(0, 800)}`);
+				return textResult(lines.join("\n"));
+			},
+		);
+
+		// -------------------------------------------------------------------
+		// Tool 11 — address_network
+		// -------------------------------------------------------------------
+		this.server.registerTool(
+			"address_network",
+			{
+				description:
+					"Carriers sharing an address, phone, email, or officer with this DOT.",
+				inputSchema: {
+					dot_number: z.string().describe("USDOT number of the carrier (required)."),
+				},
+			},
+			async ({ dot_number }) => {
+				const env = this.env as Cloudflare.Env;
+				let data: Record<string, unknown>;
+				try {
+					data = await callGateway(env, RPC_ADDRESS_NETWORK, {
+						p_dot_number: String(parseInt(dot_number, 10)),
+					});
+				} catch (e) {
+					return errorResult((e as Error).message);
+				}
+				const lines: string[] = [`Address Network — DOT ${dot_number}`, ""];
+				lines.push(...renderValue(data, ""));
+				// TEMPORARY: confirm shape, then remove.
+				lines.push("", `DEBUG data (first 800 chars): ${JSON.stringify(data).slice(0, 800)}`);
+				return textResult(lines.join("\n"));
+			},
+		);
+
+		// -------------------------------------------------------------------
+		// Tool 12 — reincarnation_network
+		// -------------------------------------------------------------------
+		this.server.registerTool(
+			"reincarnation_network",
+			{
+				description:
+					"Reincarnation matches for a DOT based on officer/address/phone overlap — chameleon successor detection.",
+				inputSchema: {
+					dot_number: z.string().describe("USDOT number of the carrier (required)."),
+				},
+			},
+			async ({ dot_number }) => {
+				const env = this.env as Cloudflare.Env;
+				let data: Record<string, unknown>;
+				try {
+					data = await callGateway(env, RPC_REINCARNATION_NETWORK, {
+						p_dot_number: String(parseInt(dot_number, 10)),
+					});
+				} catch (e) {
+					return errorResult((e as Error).message);
+				}
+				const lines: string[] = [`Reincarnation Network — DOT ${dot_number}`, ""];
+				lines.push(...renderValue(data, ""));
+				// TEMPORARY: confirm shape, then remove.
+				lines.push("", `DEBUG data (first 800 chars): ${JSON.stringify(data).slice(0, 800)}`);
+				return textResult(lines.join("\n"));
+			},
+		);
+
+		// -------------------------------------------------------------------
+		// Tool 13 — carrier_event_timeline
+		// NOTE: this RPC takes the DOT as a BIGINT — pass a number, not a string.
+		// -------------------------------------------------------------------
+		this.server.registerTool(
+			"carrier_event_timeline",
+			{
+				description:
+					"Chronological timeline of filings, crashes, OOS events, and enforcement for a carrier.",
+				inputSchema: {
+					dot_number: z.string().describe("USDOT number of the carrier (required)."),
+				},
+			},
+			async ({ dot_number }) => {
+				const env = this.env as Cloudflare.Env;
+				let data: Record<string, unknown>;
+				try {
+					data = await callGateway(env, RPC_CARRIER_EVENT_TIMELINE, {
+						p_dot: parseInt(dot_number, 10),
+					});
+				} catch (e) {
+					return errorResult((e as Error).message);
+				}
+				const lines: string[] = [`Carrier Event Timeline — DOT ${dot_number}`, ""];
+				lines.push(...renderValue(data, ""));
+				// TEMPORARY: confirm shape, then remove.
+				lines.push("", `DEBUG data (first 800 chars): ${JSON.stringify(data).slice(0, 800)}`);
+				return textResult(lines.join("\n"));
+			},
+		);
+
+		// -------------------------------------------------------------------
+		// Tool 14 — chameleon_risk_score
+		// -------------------------------------------------------------------
+		this.server.registerTool(
+			"chameleon_risk_score",
+			{
+				description:
+					"Chameleon risk score 0-100 with tier, connection counts, and top shared-VIN partner.",
+				inputSchema: {
+					dot_number: z.string().describe("USDOT number of the carrier (required)."),
+				},
+			},
+			async ({ dot_number }) => {
+				const env = this.env as Cloudflare.Env;
+				let data: Record<string, unknown>;
+				try {
+					data = await callGateway(env, RPC_CHAMELEON_RISK, {
+						seed_dot: String(parseInt(dot_number, 10)),
+					});
+				} catch (e) {
+					return errorResult((e as Error).message);
+				}
+				const lines: string[] = [`Chameleon Risk Score — DOT ${dot_number}`, ""];
+				lines.push(...renderValue(data, ""));
+				// TEMPORARY: confirm shape, then remove.
+				lines.push("", `DEBUG data (first 800 chars): ${JSON.stringify(data).slice(0, 800)}`);
+				return textResult(lines.join("\n"));
+			},
+		);
+
+		// -------------------------------------------------------------------
+		// Tool 15 — network_search
+		// -------------------------------------------------------------------
+		this.server.registerTool(
+			"network_search",
+			{
+				description:
+					"Find all carriers reachable from any seed — phone, email, address, officer name, or DOT — across multiple hops.",
+				inputSchema: {
+					seed_value: z
+						.string()
+						.describe("Seed value: phone, email, address, officer name, or DOT (required)."),
+					max_depth: z
+						.number()
+						.int()
+						.min(1)
+						.max(4)
+						.optional()
+						.default(2)
+						.describe("Number of hops to traverse (default 2, max 4)."),
+				},
+			},
+			async ({ seed_value, max_depth }) => {
+				const env = this.env as Cloudflare.Env;
+				let data: Record<string, unknown>;
+				try {
+					data = await callGateway(env, RPC_NETWORK_SEARCH, { seed_value, max_depth });
+				} catch (e) {
+					return errorResult((e as Error).message);
+				}
+				const lines: string[] = [
+					`Network Search — "${seed_value}" (depth ${max_depth})`,
+					"",
+				];
+				lines.push(...renderValue(data, ""));
+				// TEMPORARY: confirm shape, then remove.
+				lines.push("", `DEBUG data (first 800 chars): ${JSON.stringify(data).slice(0, 800)}`);
+				return textResult(lines.join("\n"));
+			},
+		);
+
+		// -------------------------------------------------------------------
+		// Tool 16 — carriers_by_phone
+		// -------------------------------------------------------------------
+		this.server.registerTool(
+			"carriers_by_phone",
+			{
+				description: "All carriers tied to a given phone number.",
+				inputSchema: {
+					phone: z.string().describe("Phone number to search for (required)."),
+				},
+			},
+			async ({ phone }) => {
+				const env = this.env as Cloudflare.Env;
+				let data: Record<string, unknown>;
+				try {
+					data = await callGateway(env, RPC_CARRIERS_BY_PHONE, { p_phone: phone });
+				} catch (e) {
+					return errorResult((e as Error).message);
+				}
+				const lines: string[] = [`Carriers By Phone — ${phone}`, ""];
+				lines.push(...renderValue(data, ""));
+				// TEMPORARY: confirm shape, then remove.
+				lines.push("", `DEBUG data (first 800 chars): ${JSON.stringify(data).slice(0, 800)}`);
+				return textResult(lines.join("\n"));
+			},
+		);
+
+		// -------------------------------------------------------------------
+		// Tool 17 — investigate_dot
+		// -------------------------------------------------------------------
+		this.server.registerTool(
+			"investigate_dot",
+			{
+				description:
+					"Full chameleon and network investigation bundle for a DOT in one call.",
+				inputSchema: {
+					dot_number: z.string().describe("USDOT number of the carrier (required)."),
+				},
+			},
+			async ({ dot_number }) => {
+				const env = this.env as Cloudflare.Env;
+				let data: Record<string, unknown>;
+				try {
+					data = await callGateway(env, RPC_INVESTIGATE_DOT, {
+						input_dot: String(parseInt(dot_number, 10)),
+					});
+				} catch (e) {
+					return errorResult((e as Error).message);
+				}
+				const lines: string[] = [`Investigate DOT — ${dot_number}`, ""];
 				lines.push(...renderValue(data, ""));
 				// TEMPORARY: confirm shape, then remove.
 				lines.push("", `DEBUG data (first 800 chars): ${JSON.stringify(data).slice(0, 800)}`);
