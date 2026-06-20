@@ -18,6 +18,14 @@ const FN_CARRIER_SCORE = "carrier_score";
 const FN_CARRIER_LOOKUP = "carrier_lookup";
 // NOTE: this function name uses hyphens, not underscores.
 const FN_NEW_ENTRANT = "new-entrant-full-report";
+// Gateway Edge Function: POST { rpc, params } -> { rpc, data, data_source, as_of }.
+const FN_GATEWAY = "tea-mcp-rpc";
+
+// Gateway RPC names (kept here so they are easy to correct in one place).
+const RPC_INVESTIGATE_CARRIER = "investigate_carrier";
+const RPC_INVESTIGATE_OFFICER = "investigate_officer";
+const RPC_SAME_SESSION_FILINGS = "carrier_same_session_filings";
+const RPC_EXPOSURE_SIGNALS = "carrier_exposure_signals";
 
 // FMCSA QCMobile live carrier endpoint (identity / authority / OOS status).
 // The DOT number and webKey are interpolated at call time.
@@ -172,6 +180,73 @@ async function fetchEdgeFunction(
 		throw new Error(`No TEA data was found for DOT ${dotNumber}.`);
 	}
 	return parsed as Record<string, unknown>;
+}
+
+/**
+ * POST to the TEA gateway Edge Function ({ rpc, params }) and return the parsed
+ * "data" object. Throws a friendly error on a non-200 response or an {error}
+ * body.
+ */
+async function callGateway(
+	env: Cloudflare.Env,
+	rpcName: string,
+	params: Record<string, unknown>,
+): Promise<Record<string, unknown>> {
+	const supabaseUrl = requireSecret(env.SUPABASE_URL, "SUPABASE_URL");
+	const teaApiKey = requireSecret(env.TEA_API_KEY, "TEA_API_KEY");
+
+	const url = `${supabaseUrl.replace(/\/+$/, "")}${FUNCTIONS_BASE_PATH}/${FN_GATEWAY}`;
+
+	let resp: Response;
+	try {
+		resp = await fetch(url, {
+			method: "POST",
+			headers: {
+				Accept: "application/json",
+				"Content-Type": "application/json",
+				Authorization: `Bearer ${teaApiKey}`,
+			},
+			body: JSON.stringify({ rpc: rpcName, params }),
+		});
+	} catch (e) {
+		throw new Error(
+			`Could not reach the TEA gateway (${rpcName}): ${(e as Error).message}`,
+		);
+	}
+
+	const raw = await resp.text();
+	if (!resp.ok) {
+		throw new Error(
+			`TEA gateway (${rpcName}) returned ${resp.status} ${resp.statusText}: ${raw.slice(0, 300)}`,
+		);
+	}
+
+	let parsed: unknown;
+	try {
+		parsed = raw ? JSON.parse(raw) : null;
+	} catch {
+		throw new Error(`TEA gateway (${rpcName}) returned a response that was not valid JSON.`);
+	}
+
+	if (parsed === null || typeof parsed !== "object") {
+		throw new Error(`TEA gateway (${rpcName}) returned an empty response.`);
+	}
+
+	const body = parsed as Record<string, unknown>;
+	if (body.error) {
+		const err = body.error;
+		const message =
+			err && typeof err === "object"
+				? String((err as Record<string, unknown>).message ?? JSON.stringify(err))
+				: String(err);
+		throw new Error(`TEA gateway (${rpcName}) error: ${message}`);
+	}
+
+	const data = body.data;
+	if (data === null || data === undefined || typeof data !== "object") {
+		throw new Error(`TEA gateway (${rpcName}) returned no data.`);
+	}
+	return data as Record<string, unknown>;
 }
 
 // ---------------------------------------------------------------------------
@@ -475,6 +550,122 @@ export class MyMCP extends McpAgent {
 				lines.push(`DEBUG status: ${status}`);
 				lines.push(`DEBUG raw (first 1500 chars): ${raw.slice(0, 1500)}`);
 
+				return textResult(lines.join("\n"));
+			},
+		);
+
+		// -------------------------------------------------------------------
+		// Tool 4 — carrier_network
+		// Network / chameleon relationships for a DOT (gateway RPC).
+		// -------------------------------------------------------------------
+		this.server.registerTool(
+			"carrier_network",
+			{
+				description:
+					"Find carriers connected to a DOT through shared officers, addresses, phones, or VINs — surfaces network and chameleon relationships.",
+				inputSchema: {
+					dot_number: z.string().describe("USDOT number of the carrier (required)."),
+				},
+			},
+			async ({ dot_number }) => {
+				const env = this.env as Cloudflare.Env;
+				let data: Record<string, unknown>;
+				try {
+					data = await callGateway(env, RPC_INVESTIGATE_CARRIER, { seed_dot: dot_number });
+				} catch (e) {
+					return errorResult((e as Error).message);
+				}
+				const lines: string[] = [`Carrier Network — DOT ${dot_number}`, ""];
+				lines.push(...renderValue(data, ""));
+				// TEMPORARY: confirm shape, then remove.
+				lines.push("", `DEBUG data (first 800 chars): ${JSON.stringify(data).slice(0, 800)}`);
+				return textResult(lines.join("\n"));
+			},
+		);
+
+		// -------------------------------------------------------------------
+		// Tool 5 — officer_network
+		// Carriers tied to a company officer by name (gateway RPC).
+		// -------------------------------------------------------------------
+		this.server.registerTool(
+			"officer_network",
+			{
+				description:
+					"Find all carriers tied to a company officer by name across the FMCSA universe.",
+				inputSchema: {
+					officer_name: z.string().describe("Company officer name to search for (required)."),
+				},
+			},
+			async ({ officer_name }) => {
+				const env = this.env as Cloudflare.Env;
+				let data: Record<string, unknown>;
+				try {
+					data = await callGateway(env, RPC_INVESTIGATE_OFFICER, { officer_name });
+				} catch (e) {
+					return errorResult((e as Error).message);
+				}
+				const lines: string[] = [`Officer Network — ${officer_name}`, ""];
+				lines.push(...renderValue(data, ""));
+				// TEMPORARY: confirm shape, then remove.
+				lines.push("", `DEBUG data (first 800 chars): ${JSON.stringify(data).slice(0, 800)}`);
+				return textResult(lines.join("\n"));
+			},
+		);
+
+		// -------------------------------------------------------------------
+		// Tool 6 — same_session_filings
+		// Carriers that filed FMCSA updates the same day (gateway RPC).
+		// -------------------------------------------------------------------
+		this.server.registerTool(
+			"same_session_filings",
+			{
+				description:
+					"Find carriers that filed FMCSA authority/MCS-150 updates the same day as this DOT — a filing-service / chameleon signal.",
+				inputSchema: {
+					dot_number: z.string().describe("USDOT number of the carrier (required)."),
+				},
+			},
+			async ({ dot_number }) => {
+				const env = this.env as Cloudflare.Env;
+				let data: Record<string, unknown>;
+				try {
+					data = await callGateway(env, RPC_SAME_SESSION_FILINGS, { p_dot: dot_number });
+				} catch (e) {
+					return errorResult((e as Error).message);
+				}
+				const lines: string[] = [`Same-Session Filings — DOT ${dot_number}`, ""];
+				lines.push(...renderValue(data, ""));
+				// TEMPORARY: confirm shape, then remove.
+				lines.push("", `DEBUG data (first 800 chars): ${JSON.stringify(data).slice(0, 800)}`);
+				return textResult(lines.join("\n"));
+			},
+		);
+
+		// -------------------------------------------------------------------
+		// Tool 7 — carrier_exposure_signals
+		// Broker-vetting exposure signals for a DOT (gateway RPC).
+		// -------------------------------------------------------------------
+		this.server.registerTool(
+			"carrier_exposure_signals",
+			{
+				description:
+					"Broker-vetting exposure signals for a DOT: insurer quality, capacity, clone-truck hits, litigation, authority age.",
+				inputSchema: {
+					dot_number: z.string().describe("USDOT number of the carrier (required)."),
+				},
+			},
+			async ({ dot_number }) => {
+				const env = this.env as Cloudflare.Env;
+				let data: Record<string, unknown>;
+				try {
+					data = await callGateway(env, RPC_EXPOSURE_SIGNALS, { p_dot: dot_number });
+				} catch (e) {
+					return errorResult((e as Error).message);
+				}
+				const lines: string[] = [`Carrier Exposure Signals — DOT ${dot_number}`, ""];
+				lines.push(...renderValue(data, ""));
+				// TEMPORARY: confirm shape, then remove.
+				lines.push("", `DEBUG data (first 800 chars): ${JSON.stringify(data).slice(0, 800)}`);
 				return textResult(lines.join("\n"));
 			},
 		);
