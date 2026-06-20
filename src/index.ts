@@ -588,8 +588,6 @@ export class MyMCP extends McpAgent {
 				}
 				const lines: string[] = [`Carrier Network — DOT ${dot_number}`, ""];
 				lines.push(...renderValue(data, ""));
-				// TEMPORARY: confirm shape, then remove.
-				lines.push("", `DEBUG data (first 800 chars): ${JSON.stringify(data).slice(0, 800)}`);
 				return textResult(lines.join("\n"));
 			},
 		);
@@ -617,8 +615,6 @@ export class MyMCP extends McpAgent {
 				}
 				const lines: string[] = [`Officer Network — ${officer_name}`, ""];
 				lines.push(...renderValue(data, ""));
-				// TEMPORARY: confirm shape, then remove.
-				lines.push("", `DEBUG data (first 800 chars): ${JSON.stringify(data).slice(0, 800)}`);
 				return textResult(lines.join("\n"));
 			},
 		);
@@ -646,8 +642,6 @@ export class MyMCP extends McpAgent {
 				}
 				const lines: string[] = [`Same-Session Filings — DOT ${dot_number}`, ""];
 				lines.push(...renderValue(data, ""));
-				// TEMPORARY: confirm shape, then remove.
-				lines.push("", `DEBUG data (first 800 chars): ${JSON.stringify(data).slice(0, 800)}`);
 				return textResult(lines.join("\n"));
 			},
 		);
@@ -675,8 +669,6 @@ export class MyMCP extends McpAgent {
 				}
 				const lines: string[] = [`Carrier Exposure Signals — DOT ${dot_number}`, ""];
 				lines.push(...renderValue(data, ""));
-				// TEMPORARY: confirm shape, then remove.
-				lines.push("", `DEBUG data (first 800 chars): ${JSON.stringify(data).slice(0, 800)}`);
 				return textResult(lines.join("\n"));
 			},
 		);
@@ -747,8 +739,6 @@ export class MyMCP extends McpAgent {
 
 				const lines: string[] = [`VIN Network — DOT ${dot_number}`, ""];
 				lines.push(...renderValue(data, ""));
-				// TEMPORARY: confirm shape, then remove.
-				lines.push("", `DEBUG data (first 800 chars): ${JSON.stringify(data).slice(0, 800)}`);
 				return textResult(lines.join("\n"));
 			},
 		);
@@ -777,8 +767,6 @@ export class MyMCP extends McpAgent {
 				}
 				const lines: string[] = [`VIN Transitions — DOT ${dot_number}`, ""];
 				lines.push(...renderValue(data, ""));
-				// TEMPORARY: confirm shape, then remove.
-				lines.push("", `DEBUG data (first 800 chars): ${JSON.stringify(data).slice(0, 800)}`);
 				return textResult(lines.join("\n"));
 			},
 		);
@@ -807,8 +795,6 @@ export class MyMCP extends McpAgent {
 				}
 				const lines: string[] = [`Carrier VIN Detail — DOT ${dot_number}`, ""];
 				lines.push(...renderValue(data, ""));
-				// TEMPORARY: confirm shape, then remove.
-				lines.push("", `DEBUG data (first 800 chars): ${JSON.stringify(data).slice(0, 800)}`);
 				return textResult(lines.join("\n"));
 			},
 		);
@@ -837,8 +823,6 @@ export class MyMCP extends McpAgent {
 				}
 				const lines: string[] = [`Address Network — DOT ${dot_number}`, ""];
 				lines.push(...renderValue(data, ""));
-				// TEMPORARY: confirm shape, then remove.
-				lines.push("", `DEBUG data (first 800 chars): ${JSON.stringify(data).slice(0, 800)}`);
 				return textResult(lines.join("\n"));
 			},
 		);
@@ -867,8 +851,6 @@ export class MyMCP extends McpAgent {
 				}
 				const lines: string[] = [`Reincarnation Network — DOT ${dot_number}`, ""];
 				lines.push(...renderValue(data, ""));
-				// TEMPORARY: confirm shape, then remove.
-				lines.push("", `DEBUG data (first 800 chars): ${JSON.stringify(data).slice(0, 800)}`);
 				return textResult(lines.join("\n"));
 			},
 		);
@@ -898,8 +880,6 @@ export class MyMCP extends McpAgent {
 				}
 				const lines: string[] = [`Carrier Event Timeline — DOT ${dot_number}`, ""];
 				lines.push(...renderValue(data, ""));
-				// TEMPORARY: confirm shape, then remove.
-				lines.push("", `DEBUG data (first 800 chars): ${JSON.stringify(data).slice(0, 800)}`);
 				return textResult(lines.join("\n"));
 			},
 		);
@@ -928,8 +908,6 @@ export class MyMCP extends McpAgent {
 				}
 				const lines: string[] = [`Chameleon Risk Score — DOT ${dot_number}`, ""];
 				lines.push(...renderValue(data, ""));
-				// TEMPORARY: confirm shape, then remove.
-				lines.push("", `DEBUG data (first 800 chars): ${JSON.stringify(data).slice(0, 800)}`);
 				return textResult(lines.join("\n"));
 			},
 		);
@@ -969,8 +947,6 @@ export class MyMCP extends McpAgent {
 					"",
 				];
 				lines.push(...renderValue(data, ""));
-				// TEMPORARY: confirm shape, then remove.
-				lines.push("", `DEBUG data (first 800 chars): ${JSON.stringify(data).slice(0, 800)}`);
 				return textResult(lines.join("\n"));
 			},
 		);
@@ -996,8 +972,6 @@ export class MyMCP extends McpAgent {
 				}
 				const lines: string[] = [`Carriers By Phone — ${phone}`, ""];
 				lines.push(...renderValue(data, ""));
-				// TEMPORARY: confirm shape, then remove.
-				lines.push("", `DEBUG data (first 800 chars): ${JSON.stringify(data).slice(0, 800)}`);
 				return textResult(lines.join("\n"));
 			},
 		);
@@ -1026,8 +1000,6 @@ export class MyMCP extends McpAgent {
 				}
 				const lines: string[] = [`Investigate DOT — ${dot_number}`, ""];
 				lines.push(...renderValue(data, ""));
-				// TEMPORARY: confirm shape, then remove.
-				lines.push("", `DEBUG data (first 800 chars): ${JSON.stringify(data).slice(0, 800)}`);
 				return textResult(lines.join("\n"));
 			},
 		);
