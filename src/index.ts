@@ -417,9 +417,9 @@ export class MyMCP extends McpAgent {
 									`TEA New-Entrant Fitness Workup — DOT ${dotInt}`,
 									"Could not retrieve the new-entrant report (both POST and GET failed).",
 									`DEBUG POST status: ${status}`,
-									`DEBUG POST body: ${raw.slice(0, 800)}`,
+									`DEBUG POST body: ${raw.slice(0, 1500)}`,
 									`DEBUG GET status: ${getStatus}`,
-									`DEBUG GET body: ${getRaw.slice(0, 800)}`,
+									`DEBUG GET body: ${getRaw.slice(0, 1500)}`,
 								].join("\n"),
 							);
 						}
@@ -473,7 +473,7 @@ export class MyMCP extends McpAgent {
 				// TEMPORARY: confirm method + response shape, then remove.
 				lines.push(`DEBUG method: ${usedMethod}`);
 				lines.push(`DEBUG status: ${status}`);
-				lines.push(`DEBUG raw (first 800 chars): ${raw.slice(0, 800)}`);
+				lines.push(`DEBUG raw (first 1500 chars): ${raw.slice(0, 1500)}`);
 
 				return textResult(lines.join("\n"));
 			},
