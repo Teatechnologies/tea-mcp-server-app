@@ -220,9 +220,7 @@ async function callGateway(
 			body: JSON.stringify({ rpc: rpcName, params }),
 		});
 	} catch (e) {
-		throw new Error(
-			`Could not reach the TEA gateway (${rpcName}): ${(e as Error).message}`,
-		);
+		throw new Error(`Could not reach the TEA gateway (${rpcName}): ${(e as Error).message}`);
 	}
 
 	const raw = await resp.text();
@@ -260,6 +258,223 @@ async function callGateway(
 	return data as Record<string, unknown>;
 }
 
+/**
+ * Call the dedicated vin-network Edge Function for a DOT and return the parsed
+ * object. Mirrors the inline logic in the vin_network tool so the orchestrator
+ * can reuse it without touching that tool. Throws a friendly error on failure.
+ */
+async function fetchVinNetwork(
+	env: Cloudflare.Env,
+	dotNumber: string,
+): Promise<Record<string, unknown>> {
+	const supabaseUrl = requireSecret(env.SUPABASE_URL, "SUPABASE_URL");
+	const teaApiKey = requireSecret(env.TEA_API_KEY, "TEA_API_KEY");
+	const url = `${supabaseUrl.replace(/\/+$/, "")}${FUNCTIONS_BASE_PATH}/${FN_VIN_NETWORK}`;
+
+	let resp: Response;
+	try {
+		resp = await fetch(url, {
+			method: "POST",
+			headers: {
+				Accept: "application/json",
+				"Content-Type": "application/json",
+				Authorization: `Bearer ${teaApiKey}`,
+			},
+			body: JSON.stringify({ dot_number: dotNumber }),
+		});
+	} catch (e) {
+		throw new Error(`Could not reach the VIN-network service: ${(e as Error).message}`);
+	}
+
+	const raw = await resp.text();
+	if (!resp.ok) {
+		throw new Error(
+			`VIN-network service returned ${resp.status} ${resp.statusText}: ${raw.slice(0, 300)}`,
+		);
+	}
+
+	let parsed: unknown;
+	try {
+		parsed = raw ? JSON.parse(raw) : null;
+	} catch {
+		throw new Error("VIN-network service returned a response that was not valid JSON.");
+	}
+	if (parsed === null || typeof parsed !== "object") {
+		throw new Error(`No VIN-network data was found for DOT ${dotNumber}.`);
+	}
+	const data = parsed as Record<string, unknown>;
+	if (data.error) {
+		const err = data.error;
+		const message =
+			err && typeof err === "object"
+				? String((err as Record<string, unknown>).message ?? JSON.stringify(err))
+				: String(err);
+		throw new Error(`VIN-network service error: ${message}`);
+	}
+	return data;
+}
+
+/**
+ * Normalize an officer / person name for cross-referencing: upper-case, strip
+ * punctuation and common honorifics/suffixes, and collapse whitespace. The
+ * existing officer_network tool passes names through verbatim, so this is the
+ * canonical normalizer shared by the orchestrator and corporate_registry_search.
+ */
+function normalizeOfficerName(raw: string): string {
+	return raw
+		.toUpperCase()
+		.replace(/[.,'"]/g, " ")
+		.replace(/\b(JR|SR|II|III|IV|V|MR|MRS|MS|DR|MD|ESQ)\b/g, " ")
+		.replace(/\s+/g, " ")
+		.trim();
+}
+
+// Keys whose *name* marks an officer/principal context, and keys that carry an
+// actual person name once we are inside such a context.
+const OFFICER_CONTEXT_KEY = /officer|principal|owner|representative|contact|agent/i;
+const PERSON_NAME_KEY = /^(name|full_name|officer_name|person|person_name|contact_name)$/i;
+
+/**
+ * Recursively pull candidate officer names out of an arbitrary gateway result.
+ * Shapes vary across RPCs, so this is deliberately defensive: it collects string
+ * values that are either directly under an officer-ish key or under a name-ish
+ * key nested inside an officer-ish context. Returns names de-duplicated by their
+ * normalized form, preserving the first display spelling seen.
+ */
+function extractOfficerNames(value: unknown): string[] {
+	const found: string[] = [];
+	const walk = (v: unknown, underOfficer: boolean): void => {
+		if (v === null || v === undefined) return;
+		if (typeof v === "string") {
+			if (underOfficer && v.trim()) found.push(v.trim());
+			return;
+		}
+		if (Array.isArray(v)) {
+			for (const item of v) walk(item, underOfficer);
+			return;
+		}
+		if (typeof v === "object") {
+			for (const [k, val] of Object.entries(v as Record<string, unknown>)) {
+				const keyIsOfficer = OFFICER_CONTEXT_KEY.test(k);
+				if (typeof val === "string") {
+					if ((keyIsOfficer || (underOfficer && PERSON_NAME_KEY.test(k))) && val.trim()) {
+						found.push(val.trim());
+					}
+				} else {
+					walk(val, underOfficer || keyIsOfficer);
+				}
+			}
+		}
+	};
+	walk(value, false);
+
+	const seen = new Set<string>();
+	const out: string[] = [];
+	for (const name of found) {
+		const norm = normalizeOfficerName(name);
+		// Skip obvious non-names (empty after normalization, or pure numbers).
+		if (!norm || /^\d+$/.test(norm)) continue;
+		if (seen.has(norm)) continue;
+		seen.add(norm);
+		out.push(name);
+	}
+	return out;
+}
+
+/** Return the first primitive value whose key matches, searched recursively. */
+function findFirstValue(value: unknown, keyRegex: RegExp): string | number | undefined {
+	let result: string | number | undefined;
+	const walk = (v: unknown): void => {
+		if (result !== undefined || v === null || typeof v !== "object") return;
+		if (Array.isArray(v)) {
+			for (const item of v) {
+				walk(item);
+				if (result !== undefined) return;
+			}
+			return;
+		}
+		for (const [k, val] of Object.entries(v as Record<string, unknown>)) {
+			if (
+				(typeof val === "string" || typeof val === "number") &&
+				val !== "" &&
+				keyRegex.test(k)
+			) {
+				result = val;
+				return;
+			}
+		}
+		for (const val of Object.values(v as Record<string, unknown>)) {
+			walk(val);
+			if (result !== undefined) return;
+		}
+	};
+	walk(value);
+	return result;
+}
+
+/** Sum the lengths of every array found under a key matching keyRegex. */
+function countArrayItems(value: unknown, keyRegex: RegExp): number {
+	let total = 0;
+	const walk = (v: unknown): void => {
+		if (v === null || typeof v !== "object") return;
+		if (Array.isArray(v)) {
+			for (const item of v) walk(item);
+			return;
+		}
+		for (const [k, val] of Object.entries(v as Record<string, unknown>)) {
+			if (Array.isArray(val) && keyRegex.test(k)) total += val.length;
+			walk(val);
+		}
+	};
+	walk(value);
+	return total;
+}
+
+/** One-line "key: count" summary of the top arrays in a result (depth-limited). */
+function summarizeArrays(value: unknown): string[] {
+	const parts: string[] = [];
+	const walk = (v: unknown, prefix: string, depth: number): void => {
+		if (depth > 2 || v === null || typeof v !== "object" || Array.isArray(v)) return;
+		for (const [k, val] of Object.entries(v as Record<string, unknown>)) {
+			if (Array.isArray(val)) parts.push(`${prefix}${k}: ${val.length}`);
+			else if (val && typeof val === "object") walk(val, `${prefix}${k}.`, depth + 1);
+		}
+	};
+	walk(value, "", 0);
+	return parts;
+}
+
+// ---------------------------------------------------------------------------
+// Corporate registry search — shared core
+//
+// corporate_registry_search (the standalone MCP tool) and the orchestrator's
+// per-officer corporate enrichment both go through this one function. It is
+// stubbed until the corporate_registry_search work item lands its registry
+// fetchers + KV cache; the orchestrator reports enrichment as "pending" rather
+// than fabricating matches in the meantime.
+// ---------------------------------------------------------------------------
+
+interface CorpRegistryOutcome {
+	available: boolean;
+	note?: string;
+	matches: unknown[];
+	sources_checked: string[];
+	sources_failed: string[];
+}
+
+async function corporateRegistrySearchCore(
+	_env: Cloudflare.Env,
+	_args: { name: string; state?: string; search_type: "company" | "officer" },
+): Promise<CorpRegistryOutcome> {
+	return {
+		available: false,
+		note: "corporate_registry_search is not yet deployed; corporate enrichment pending.",
+		matches: [],
+		sources_checked: [],
+		sources_failed: [],
+	};
+}
+
 // ---------------------------------------------------------------------------
 // MCP agent
 // ---------------------------------------------------------------------------
@@ -286,7 +501,9 @@ export class MyMCP extends McpAgent {
 					mc_number: z
 						.string()
 						.optional()
-						.describe("Optional MC/docket number, used as a fallback if FMCSA does not return one."),
+						.describe(
+							"Optional MC/docket number, used as a fallback if FMCSA does not return one.",
+						),
 				},
 			},
 			async ({ dot_number, mc_number }) => {
@@ -309,15 +526,22 @@ export class MyMCP extends McpAgent {
 					try {
 						parsed = raw ? JSON.parse(raw) : null;
 					} catch {
-						return errorResult("FMCSA QCMobile returned a response that was not valid JSON.");
+						return errorResult(
+							"FMCSA QCMobile returned a response that was not valid JSON.",
+						);
 					}
 					// QCMobile shape: { content: { carrier: {...} } | [{ carrier: {...} }] }
 					const content = (parsed as Record<string, unknown> | null)?.content;
 					if (Array.isArray(content)) {
-						carrier = (content[0] as Record<string, unknown>)?.carrier as Record<string, unknown> ?? {};
+						carrier =
+							((content[0] as Record<string, unknown>)?.carrier as Record<
+								string,
+								unknown
+							>) ?? {};
 					} else if (content && typeof content === "object") {
 						const c = (content as Record<string, unknown>).carrier;
-						carrier = (c as Record<string, unknown>) ?? (content as Record<string, unknown>);
+						carrier =
+							(c as Record<string, unknown>) ?? (content as Record<string, unknown>);
 					}
 					if (!carrier || Object.keys(carrier).length === 0) {
 						return errorResult(`No FMCSA carrier record found for DOT ${dot_number}.`);
@@ -328,14 +552,9 @@ export class MyMCP extends McpAgent {
 
 				// --- Extract readable fields defensively ---
 				const name =
-					(carrier.legalName as string) ||
-					(carrier.dbaName as string) ||
-					"Unknown";
+					(carrier.legalName as string) || (carrier.dbaName as string) || "Unknown";
 				const dot = (carrier.dotNumber as string | number) ?? dot_number;
-				const mc =
-					(carrier.docketNumber as string) ||
-					mc_number ||
-					"Not reported by FMCSA";
+				const mc = (carrier.docketNumber as string) || mc_number || "Not reported by FMCSA";
 				const allowed = carrier.allowedToOperate;
 				const authority =
 					allowed === "Y"
@@ -343,8 +562,7 @@ export class MyMCP extends McpAgent {
 						: allowed === "N"
 							? "NOT authorized to operate"
 							: "Unknown";
-				const oosDate =
-					(carrier.oosDate as string) || (carrier.outOfServiceDate as string);
+				const oosDate = (carrier.oosDate as string) || (carrier.outOfServiceDate as string);
 				const oosStatus = oosDate
 					? `OUT OF SERVICE (since ${oosDate})`
 					: "Not out of service";
@@ -548,7 +766,9 @@ export class MyMCP extends McpAgent {
 
 				// Narrative sections: render every other top-level section the
 				// report returns, whatever its shape.
-				const consumed = new Set<string>([compositeKey, tierKey].filter(Boolean) as string[]);
+				const consumed = new Set<string>(
+					[compositeKey, tierKey].filter(Boolean) as string[],
+				);
 				for (const [key, value] of Object.entries(payload)) {
 					if (consumed.has(key)) continue;
 					lines.push(`${prettyKey(key)}:`);
@@ -582,7 +802,9 @@ export class MyMCP extends McpAgent {
 				const env = this.env as Cloudflare.Env;
 				let data: Record<string, unknown>;
 				try {
-					data = await callGateway(env, RPC_INVESTIGATE_CARRIER, { seed_dot: dot_number });
+					data = await callGateway(env, RPC_INVESTIGATE_CARRIER, {
+						seed_dot: dot_number,
+					});
 				} catch (e) {
 					return errorResult((e as Error).message);
 				}
@@ -602,7 +824,9 @@ export class MyMCP extends McpAgent {
 				description:
 					"Find all carriers tied to a company officer by name across the FMCSA universe.",
 				inputSchema: {
-					officer_name: z.string().describe("Company officer name to search for (required)."),
+					officer_name: z
+						.string()
+						.describe("Company officer name to search for (required)."),
 				},
 			},
 			async ({ officer_name }) => {
@@ -718,7 +942,9 @@ export class MyMCP extends McpAgent {
 					try {
 						parsed = raw ? JSON.parse(raw) : null;
 					} catch {
-						return errorResult("VIN-network service returned a response that was not valid JSON.");
+						return errorResult(
+							"VIN-network service returned a response that was not valid JSON.",
+						);
 					}
 					if (parsed === null || typeof parsed !== "object") {
 						return errorResult(`No VIN-network data was found for DOT ${dot_number}.`);
@@ -729,7 +955,10 @@ export class MyMCP extends McpAgent {
 						const err = data.error;
 						const message =
 							err && typeof err === "object"
-								? String((err as Record<string, unknown>).message ?? JSON.stringify(err))
+								? String(
+										(err as Record<string, unknown>).message ??
+											JSON.stringify(err),
+									)
 								: String(err);
 						return errorResult(`VIN-network service error: ${message}`);
 					}
@@ -777,8 +1006,7 @@ export class MyMCP extends McpAgent {
 		this.server.registerTool(
 			"carrier_vin_detail",
 			{
-				description:
-					"Every VIN and plate operated by a DOT with inspection counts.",
+				description: "Every VIN and plate operated by a DOT with inspection counts.",
 				inputSchema: {
 					dot_number: z.string().describe("USDOT number of the carrier (required)."),
 				},
@@ -805,8 +1033,7 @@ export class MyMCP extends McpAgent {
 		this.server.registerTool(
 			"address_network",
 			{
-				description:
-					"Carriers sharing an address, phone, email, or officer with this DOT.",
+				description: "Carriers sharing an address, phone, email, or officer with this DOT.",
 				inputSchema: {
 					dot_number: z.string().describe("USDOT number of the carrier (required)."),
 				},
@@ -923,7 +1150,9 @@ export class MyMCP extends McpAgent {
 				inputSchema: {
 					seed_value: z
 						.string()
-						.describe("Seed value: phone, email, address, officer name, or DOT (required)."),
+						.describe(
+							"Seed value: phone, email, address, officer name, or DOT (required).",
+						),
 					max_depth: z
 						.number()
 						.int()
@@ -1001,6 +1230,268 @@ export class MyMCP extends McpAgent {
 				const lines: string[] = [`Investigate DOT — ${dot_number}`, ""];
 				lines.push(...renderValue(data, ""));
 				return textResult(lines.join("\n"));
+			},
+		);
+
+		// -------------------------------------------------------------------
+		// Tool 18 — generate_investigation_report
+		// Orchestrator: chains the existing investigation tools server-side in
+		// a fixed order, extracts officers, optionally enriches each of the top
+		// 5 officers via corporate_registry_search, and returns one structured
+		// markdown report. No new data sources. Inherits the same gateway /
+		// TEA_API_KEY auth as every other tool (no separate tier gate exists).
+		// Partial failures are captured per step rather than failing the call.
+		// -------------------------------------------------------------------
+		this.server.registerTool(
+			"generate_investigation_report",
+			{
+				description:
+					"Generate one consolidated carrier investigation report for a DOT number. Chains the existing tools server-side (investigate_dot -> officer_network -> address_network -> vin_network -> same_session_filings -> carrier_exposure_signals), and unless include_corporate is false, cross-references the top 5 discovered officers against free public corporate registries. Returns a single structured markdown report: carrier identity, TEA score, network summary, per-officer corporate entity matches, silent-transfer flags, and a findings section. Resilient to individual step failures.",
+				inputSchema: {
+					dot_number: z.string().describe("USDOT number of the carrier (required)."),
+					include_corporate: z
+						.boolean()
+						.optional()
+						.default(true)
+						.describe(
+							"Whether to cross-reference discovered officers against public corporate registries (default true).",
+						),
+				},
+			},
+			async ({ dot_number, include_corporate = true }) => {
+				const env = this.env as Cloudflare.Env;
+
+				const dotInt = parseInt(dot_number, 10);
+				if (!Number.isInteger(dotInt)) {
+					return errorResult(`DOT number must be numeric. Received: ${dot_number}`);
+				}
+				const dotStr = String(dotInt);
+
+				// Each step records its own success/failure so one failing portal
+				// or RPC never sinks the whole report.
+				interface StepResult {
+					key: string;
+					title: string;
+					ok: boolean;
+					data?: Record<string, unknown>;
+					error?: string;
+				}
+				const steps: StepResult[] = [];
+				const run = async (
+					key: string,
+					title: string,
+					fn: () => Promise<Record<string, unknown>>,
+				): Promise<Record<string, unknown> | undefined> => {
+					try {
+						const data = await fn();
+						steps.push({ key, title, ok: true, data });
+						return data;
+					} catch (e) {
+						steps.push({ key, title, ok: false, error: (e as Error).message });
+						return undefined;
+					}
+				};
+
+				// 1. investigate_dot - the identity/network bundle and officer source.
+				const invData = await run("investigate_dot", "Investigation Bundle", () =>
+					callGateway(env, RPC_INVESTIGATE_DOT, { input_dot: dotStr }),
+				);
+
+				// Officers are discovered from the investigation bundle, then fed
+				// into officer_network (which requires a name, not a DOT).
+				const officerNames = invData ? extractOfficerNames(invData) : [];
+				const primaryOfficer = officerNames[0];
+
+				// 2. officer_network - keyed on the primary discovered officer.
+				if (primaryOfficer) {
+					await run("officer_network", `Officer Network - ${primaryOfficer}`, () =>
+						callGateway(env, RPC_INVESTIGATE_OFFICER, { officer_name: primaryOfficer }),
+					);
+				} else {
+					steps.push({
+						key: "officer_network",
+						title: "Officer Network",
+						ok: false,
+						error: "No officer name was found in the investigation bundle to search on.",
+					});
+				}
+
+				// 3-6. Remaining DOT-keyed steps (param conventions match each tool).
+				await run("address_network", "Address Network", () =>
+					callGateway(env, RPC_ADDRESS_NETWORK, { p_dot_number: dotStr }),
+				);
+				await run("vin_network", "VIN Network", () => fetchVinNetwork(env, dot_number));
+				await run("same_session_filings", "Same-Session Filings", () =>
+					callGateway(env, RPC_SAME_SESSION_FILINGS, { p_dot: dot_number }),
+				);
+				await run("carrier_exposure_signals", "Exposure Signals", () =>
+					callGateway(env, RPC_EXPOSURE_SIGNALS, { p_dot: dot_number }),
+				);
+
+				// Corporate enrichment: top 5 officers, via the shared core.
+				const topOfficers = officerNames.slice(0, 5);
+				const corpResults: { officer: string; outcome: CorpRegistryOutcome }[] = [];
+				if (include_corporate) {
+					for (const officer of topOfficers) {
+						const outcome = await corporateRegistrySearchCore(env, {
+							name: officer,
+							search_type: "officer",
+						});
+						corpResults.push({ officer, outcome });
+					}
+				}
+
+				// --- Compose the markdown report ---
+				const dataFor = (key: string) => steps.find((s) => s.key === key)?.data;
+				const inv = dataFor("investigate_dot") ?? {};
+				const vinData = dataFor("vin_network");
+				const ssData = dataFor("same_session_filings");
+				const expData = dataFor("carrier_exposure_signals");
+
+				const md: string[] = [];
+				md.push(`# Investigation Report - DOT ${dotStr}`, "");
+
+				// Carrier identity
+				md.push("## Carrier Identity");
+				md.push(
+					`- Legal Name: ${fmt(findFirstValue(inv, /legal_name|carrier_name|entity_name|dba_name|company_name/i))}`,
+					`- DOT Number: ${dotStr}`,
+					`- MC Number: ${fmt(findFirstValue(inv, /docket|mc_number|mc_num/i))}`,
+					`- Status: ${fmt(findFirstValue(inv, /operating_status|authority_status|^status$/i))}`,
+					`- Principal Address: ${fmt(findFirstValue(inv, /address|principal_address|phy_/i))}`,
+					"",
+				);
+
+				// TEA score
+				md.push("## TEA Score");
+				md.push(
+					`- TEA / Composite Score: ${fmt(findFirstValue(inv, /tea_score|composite_score|risk_score|chameleon_score/i))}`,
+					`- Risk Tier: ${fmt(findFirstValue(inv, /risk_tier|^tier$|composite_tier/i))}`,
+					"",
+				);
+
+				// Network summary - per-step status + array counts.
+				md.push("## Network Summary");
+				for (const s of steps) {
+					if (!s.ok) {
+						md.push(`- **${s.title}**: step failed - ${s.error}`);
+						continue;
+					}
+					const counts = summarizeArrays(s.data);
+					md.push(
+						`- **${s.title}**: ok${counts.length ? ` (${counts.join(", ")})` : ""}`,
+					);
+				}
+				md.push("");
+
+				md.push("## Officers Discovered");
+				if (officerNames.length === 0) {
+					md.push("- None found in the investigation bundle.", "");
+				} else {
+					for (const o of officerNames) {
+						md.push(`- ${o}  _(normalized: ${normalizeOfficerName(o)})_`);
+					}
+					md.push("");
+				}
+
+				// Corporate entity matches per officer
+				md.push("## Corporate Entity Matches");
+				if (!include_corporate) {
+					md.push("- Skipped (include_corporate = false).", "");
+				} else if (topOfficers.length === 0) {
+					md.push("- No officers available to cross-reference.", "");
+				} else {
+					for (const { officer, outcome } of corpResults) {
+						md.push(`### ${officer}`);
+						if (!outcome.available) {
+							md.push(`- ${outcome.note ?? "No corporate data available."}`);
+						} else if (outcome.matches.length === 0) {
+							md.push(
+								`- No matches. Sources checked: ${outcome.sources_checked.join(", ") || "none"}.`,
+							);
+						} else {
+							md.push(`- ${outcome.matches.length} match(es):`);
+							md.push(...renderValue(outcome.matches, "  "));
+							if (outcome.sources_failed.length) {
+								md.push(`- Sources failed: ${outcome.sources_failed.join(", ")}`);
+							}
+						}
+						md.push("");
+					}
+				}
+
+				// Silent-transfer flags - heuristic signals from the network steps.
+				md.push("## Silent-Transfer Flags");
+				const flag = (label: string, present: boolean | undefined, detail: string) => {
+					if (present === undefined) md.push(`- ${label}: unknown (source step failed)`);
+					else md.push(`- ${label}: ${present ? `yes - ${detail}` : "no"}`);
+				};
+				const sharedVins = vinData
+					? countArrayItems(vinData, /carrier|cross|shared|other|partner|dot/i)
+					: undefined;
+				const coFilers = ssData
+					? countArrayItems(ssData, /filing|carrier|session|match|result|dot/i)
+					: undefined;
+				const exposureHits = expData
+					? countArrayItems(expData, /clone|litig|signal|hit|flag|exposure/i)
+					: undefined;
+				flag(
+					"Shared VINs with other carriers",
+					sharedVins === undefined ? undefined : sharedVins > 0,
+					`${sharedVins} related VIN/carrier record(s)`,
+				);
+				flag(
+					"Same-session co-filers",
+					coFilers === undefined ? undefined : coFilers > 0,
+					`${coFilers} co-filing record(s)`,
+				);
+				flag(
+					"Exposure / clone-truck signals",
+					exposureHits === undefined ? undefined : exposureHits > 0,
+					`${exposureHits} exposure signal(s)`,
+				);
+				md.push("");
+
+				// Findings - synthesis.
+				md.push("## Findings");
+				const okSteps = steps.filter((s) => s.ok).map((s) => s.title);
+				const failedSteps = steps.filter((s) => !s.ok);
+				md.push(`- Steps completed: ${okSteps.length}/${steps.length}.`);
+				if (failedSteps.length) {
+					md.push(`- Steps failed: ${failedSteps.map((s) => s.title).join(", ")}.`);
+				}
+				md.push(`- Officers discovered: ${officerNames.length}.`);
+				if (include_corporate) {
+					const withMatches = corpResults.filter(
+						(r) => r.outcome.matches.length > 0,
+					).length;
+					const pending = corpResults.some((r) => !r.outcome.available);
+					md.push(
+						`- Corporate enrichment: ${withMatches} of ${corpResults.length} top officer(s) matched${pending ? " (corporate_registry_search not yet deployed - enrichment pending)" : ""}.`,
+					);
+				}
+				const activeFlags: string[] = [];
+				if (sharedVins) activeFlags.push("shared VINs");
+				if (coFilers) activeFlags.push("same-session co-filers");
+				if (exposureHits) activeFlags.push("exposure signals");
+				md.push(
+					`- Silent-transfer indicators: ${activeFlags.length ? activeFlags.join(", ") : "none detected in available data"}.`,
+				);
+				md.push("");
+
+				// Full per-step detail, so nothing is hidden behind the summary.
+				md.push("## Detail");
+				for (const s of steps) {
+					md.push(`### ${s.title}`);
+					if (!s.ok) {
+						md.push(`_Step failed: ${s.error}_`, "");
+						continue;
+					}
+					md.push(...renderValue(s.data, ""));
+					md.push("");
+				}
+
+				return textResult(md.join("\n"));
 			},
 		);
 	}
