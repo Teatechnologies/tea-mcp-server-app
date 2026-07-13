@@ -55,6 +55,9 @@ declare global {
 			SUPABASE_KEY: string;
 			QCMOBILE_WEBKEY: string;
 			TEA_API_KEY: string;
+			// Optional KV cache for corporate_registry_search (30-day TTL).
+			// Optional so the tool degrades gracefully before the namespace exists.
+			CORP_REGISTRY_CACHE?: KVNamespace;
 		}
 	}
 }
@@ -448,31 +451,321 @@ function summarizeArrays(value: unknown): string[] {
 // Corporate registry search — shared core
 //
 // corporate_registry_search (the standalone MCP tool) and the orchestrator's
-// per-officer corporate enrichment both go through this one function. It is
-// stubbed until the corporate_registry_search work item lands its registry
-// fetchers + KV cache; the orchestrator reports enrichment as "pending" rather
-// than fabricating matches in the meantime.
+// per-officer corporate enrichment both go through this one function. It queries
+// only FREE official public corporate registries (no OpenCorporates / paid API):
+//   - Free official JSON APIs: Colorado (Socrata), New York (Socrata), plus a
+//     best-effort Washington SoS adapter.
+//   - Federal: SEC EDGAR full-text search API (officer + company names).
+//   - Public state search PAGES (VA/FL/TX/CA/IL/NJ/GA) are declared as adapters
+//     but scaffolded: each reports to sources_failed until its portal-specific
+//     server-side parsing is wired, so we never fabricate matches.
+// Results are cached in the CORP_REGISTRY_CACHE KV namespace (30-day TTL) keyed
+// on normalized name + state. External requests are throttled to <= 1/second.
 // ---------------------------------------------------------------------------
+
+// 30 days, in seconds — the KV entry TTL.
+const CORP_CACHE_TTL_SECONDS = 30 * 24 * 60 * 60;
+// Minimum gap between outbound registry requests (politeness).
+const CORP_MIN_REQUEST_GAP_MS = 1000;
+// Per-source match cap, to keep responses bounded.
+const CORP_MAX_MATCHES_PER_SOURCE = 10;
+
+/** One normalized corporate match, in the tool's stable output shape. */
+interface CorpMatch {
+	entity_name: string;
+	jurisdiction: string;
+	status: string;
+	formation_date: string;
+	registered_agent: string;
+	principal_address: string;
+	officers: string[];
+	source_url: string;
+	retrieved_at: string;
+}
 
 interface CorpRegistryOutcome {
 	available: boolean;
 	note?: string;
-	matches: unknown[];
+	cached: boolean;
+	matches: CorpMatch[];
 	sources_checked: string[];
 	sources_failed: string[];
 }
 
+/**
+ * Normalize a company name for cache keys and comparison: upper-case, strip
+ * punctuation and common entity suffixes, collapse whitespace.
+ */
+function normalizeCompanyName(raw: string): string {
+	return raw
+		.toUpperCase()
+		.replace(/[.,'"]/g, " ")
+		.replace(
+			/\b(INC|INCORPORATED|LLC|L L C|CORP|CORPORATION|CO|COMPANY|LP|LLP|LLLP|LTD|LIMITED|PC|PLLC|PA)\b/g,
+			" ",
+		)
+		.replace(/\s+/g, " ")
+		.trim();
+}
+
+/** First non-empty stringified value among candidate keys (case-insensitive). */
+function pickField(row: Record<string, unknown>, keys: string[]): string {
+	const lower: Record<string, unknown> = {};
+	for (const [k, v] of Object.entries(row)) lower[k.toLowerCase()] = v;
+	for (const key of keys) {
+		const v = lower[key.toLowerCase()];
+		if (v !== undefined && v !== null && String(v).trim() !== "") return String(v).trim();
+	}
+	return "";
+}
+
+/** A single free public-registry source. */
+interface CorpSource {
+	id: string;
+	/** Two-letter code + full name variants this source covers; empty for national. */
+	states: string[];
+	/** True for national/federal sources (always run). */
+	national?: boolean;
+	/** True for the free official JSON-API state sources (run even with no state). */
+	freeApi?: boolean;
+	supports: Array<"company" | "officer">;
+	run: (args: {
+		name: string;
+		state?: string;
+		search_type: "company" | "officer";
+	}) => Promise<CorpMatch[]>;
+}
+
+/** GET JSON with a descriptive User-Agent (SEC and most portals expect one). */
+async function corpFetchJson(url: string): Promise<unknown> {
+	const resp = await fetch(url, {
+		headers: {
+			Accept: "application/json",
+			"User-Agent": "TEA-MCP-Server corporate_registry_search (public-registry lookup)",
+		},
+	});
+	const raw = await resp.text();
+	if (!resp.ok) {
+		throw new Error(`HTTP ${resp.status} ${resp.statusText}: ${raw.slice(0, 200)}`);
+	}
+	try {
+		return raw ? JSON.parse(raw) : null;
+	} catch {
+		throw new Error("response was not valid JSON");
+	}
+}
+
+const CORP_SOURCES: CorpSource[] = [
+	// --- Colorado: Socrata business-entities dataset (free official API) ---
+	{
+		id: "CO SoS (data.colorado.gov)",
+		states: ["CO", "COLORADO"],
+		freeApi: true,
+		supports: ["company"],
+		run: async ({ name }) => {
+			const url =
+				"https://data.colorado.gov/resource/4ykn-tg5h.json" +
+				`?$q=${encodeURIComponent(name)}&$limit=${CORP_MAX_MATCHES_PER_SOURCE}`;
+			const rows = (await corpFetchJson(url)) as Record<string, unknown>[] | null;
+			if (!Array.isArray(rows)) return [];
+			const now = new Date().toISOString();
+			return rows.map((r) => ({
+				entity_name: pickField(r, ["entityname", "entity_name"]),
+				jurisdiction: "CO",
+				status: pickField(r, ["entitystatus", "entity_status"]),
+				formation_date: pickField(r, ["entityformdate", "entityformationdate"]),
+				registered_agent: [
+					pickField(r, ["agentfirstname"]),
+					pickField(r, ["agentlastname"]),
+				]
+					.filter(Boolean)
+					.join(" "),
+				principal_address: pickField(r, ["principaladdress1", "principaladdress"]),
+				officers: [],
+				source_url: `https://www.sos.state.co.us/biz/BusinessEntityDetail.do?quitButtonDestination=BusinessEntityResults&nameTyp=ENT&masterFileId=${encodeURIComponent(
+					pickField(r, ["entityid"]),
+				)}`,
+				retrieved_at: now,
+			}));
+		},
+	},
+	// --- New York: Socrata Active Corporations dataset (free official API) ---
+	{
+		id: "NY DoS (data.ny.gov)",
+		states: ["NY", "NEW YORK"],
+		freeApi: true,
+		supports: ["company"],
+		run: async ({ name }) => {
+			const url =
+				"https://data.ny.gov/resource/n9v6-gdp6.json" +
+				`?$q=${encodeURIComponent(name)}&$limit=${CORP_MAX_MATCHES_PER_SOURCE}`;
+			const rows = (await corpFetchJson(url)) as Record<string, unknown>[] | null;
+			if (!Array.isArray(rows)) return [];
+			const now = new Date().toISOString();
+			return rows.map((r) => ({
+				entity_name: pickField(r, ["current_entity_name", "entity_name"]),
+				jurisdiction: pickField(r, ["jurisdiction"]) || "NY",
+				status: pickField(r, ["current_entity_status", "entity_status"]),
+				formation_date: pickField(r, ["initial_dos_filing_date", "dos_filing_date"]),
+				registered_agent: pickField(r, ["dos_process_name", "registered_agent_name"]),
+				principal_address: [
+					pickField(r, ["dos_process_address_1"]),
+					pickField(r, ["dos_process_city"]),
+					pickField(r, ["dos_process_state"]),
+					pickField(r, ["dos_process_zip"]),
+				]
+					.filter(Boolean)
+					.join(", "),
+				officers: [],
+				source_url: "https://apps.dos.ny.gov/publicInquiry/",
+				retrieved_at: now,
+			}));
+		},
+	},
+	// --- Washington SoS: best-effort; CCFS has no stable free JSON API yet ---
+	{
+		id: "WA SoS (CCFS)",
+		states: ["WA", "WASHINGTON"],
+		freeApi: true,
+		supports: ["company"],
+		run: async () => {
+			throw new Error(
+				"WA CCFS public API contract not yet wired (session-based search); pending.",
+			);
+		},
+	},
+	// --- Federal: SEC EDGAR full-text search API (free) ---
+	{
+		id: "SEC EDGAR full-text search",
+		states: [],
+		national: true,
+		supports: ["company", "officer"],
+		run: async ({ name }) => {
+			const url = `https://efts.sec.gov/LATEST/search-index?q=${encodeURIComponent(`"${name}"`)}`;
+			const body = (await corpFetchJson(url)) as {
+				hits?: { hits?: Array<{ _id?: string; _source?: Record<string, unknown> }> };
+			} | null;
+			const hits = body?.hits?.hits ?? [];
+			const now = new Date().toISOString();
+			return hits.slice(0, CORP_MAX_MATCHES_PER_SOURCE).map((h) => {
+				const src = h._source ?? {};
+				const displayNames = Array.isArray(src.display_names)
+					? (src.display_names as string[])
+					: [];
+				return {
+					entity_name: displayNames[0] ?? pickField(src, ["display_names"]),
+					jurisdiction: "US (SEC)",
+					status: "SEC filer",
+					formation_date: pickField(src, ["file_date"]),
+					registered_agent: "",
+					principal_address: "",
+					officers: displayNames.slice(1),
+					source_url: `https://www.sec.gov/cgi-bin/browse-edgar?action=getcompany&company=${encodeURIComponent(
+						name,
+					)}&type=&dateb=&owner=include&count=40`,
+					retrieved_at: now,
+				};
+			});
+		},
+	},
+	// --- Public state search PAGES: scaffolded (server-side parsing pending) ---
+	...(
+		[
+			["VA SCC CIS", ["VA", "VIRGINIA"]],
+			["FL Sunbiz", ["FL", "FLORIDA"]],
+			["TX SOSDirect", ["TX", "TEXAS"]],
+			["CA bizfile", ["CA", "CALIFORNIA"]],
+			["IL SoS", ["IL", "ILLINOIS"]],
+			["NJ DoR", ["NJ", "NEW JERSEY"]],
+			["GA SoS", ["GA", "GEORGIA"]],
+		] as Array<[string, string[]]>
+	).map(([id, states]) => ({
+		id,
+		states,
+		supports: ["company", "officer"] as Array<"company" | "officer">,
+		run: async () => {
+			throw new Error(`${id} public search page requires server-side HTML parsing; pending.`);
+		},
+	})),
+];
+
+/**
+ * Search free official public corporate registries. Reuses a KV cache when the
+ * CORP_REGISTRY_CACHE binding is present, throttles outbound requests to
+ * <= 1/second, and returns partial results (sources_checked / sources_failed)
+ * rather than failing the whole call when one portal errors or times out.
+ */
 async function corporateRegistrySearchCore(
-	_env: Cloudflare.Env,
-	_args: { name: string; state?: string; search_type: "company" | "officer" },
+	env: Cloudflare.Env,
+	args: { name: string; state?: string; search_type: "company" | "officer" },
 ): Promise<CorpRegistryOutcome> {
-	return {
-		available: false,
-		note: "corporate_registry_search is not yet deployed; corporate enrichment pending.",
-		matches: [],
-		sources_checked: [],
-		sources_failed: [],
+	const { name, state, search_type } = args;
+
+	const normName =
+		search_type === "officer" ? normalizeOfficerName(name) : normalizeCompanyName(name);
+	const stateKey = (state ?? "ALL").toUpperCase();
+	const cacheKey = `corp:v1:${search_type}:${stateKey}:${normName}`;
+
+	// Cache read (KV binding is optional so the tool works before it is created).
+	const cache = env.CORP_REGISTRY_CACHE;
+	if (cache) {
+		try {
+			const hit = (await cache.get(cacheKey, "json")) as CorpRegistryOutcome | null;
+			if (hit) return { ...hit, cached: true };
+		} catch {
+			// Ignore cache read errors and fall through to a live lookup.
+		}
+	}
+
+	// Select applicable sources: national always; state sources when the state
+	// matches; free-API state sources also run when no state is given.
+	const st = state?.trim().toUpperCase();
+	const applicable = CORP_SOURCES.filter((s) => {
+		if (!s.supports.includes(search_type)) return false;
+		if (s.national) return true;
+		if (st) return s.states.includes(st);
+		return s.freeApi === true;
+	});
+
+	const matches: CorpMatch[] = [];
+	const sourcesChecked: string[] = [];
+	const sourcesFailed: string[] = [];
+
+	const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+
+	for (let i = 0; i < applicable.length; i++) {
+		const source = applicable[i];
+		// Throttle: leave >= 1s between outbound requests (not before the first).
+		if (i > 0) await sleep(CORP_MIN_REQUEST_GAP_MS);
+		try {
+			const found = await source.run({ name, state, search_type });
+			sourcesChecked.push(source.id);
+			matches.push(...found);
+		} catch (e) {
+			sourcesFailed.push(`${source.id}: ${(e as Error).message}`);
+		}
+	}
+
+	const outcome: CorpRegistryOutcome = {
+		available: true,
+		cached: false,
+		matches,
+		sources_checked: sourcesChecked,
+		sources_failed: sourcesFailed,
 	};
+
+	// Cache write (best-effort; ignore failures).
+	if (cache) {
+		try {
+			await cache.put(cacheKey, JSON.stringify(outcome), {
+				expirationTtl: CORP_CACHE_TTL_SECONDS,
+			});
+		} catch {
+			// Non-fatal — a missing cache write just means the next call re-fetches.
+		}
+	}
+
+	return outcome;
 }
 
 // ---------------------------------------------------------------------------
@@ -1492,6 +1785,79 @@ export class MyMCP extends McpAgent {
 				}
 
 				return textResult(md.join("\n"));
+			},
+		);
+
+		// -------------------------------------------------------------------
+		// Tool 19 — corporate_registry_search
+		// Searches FREE official public corporate registries only (no
+		// OpenCorporates / paid APIs): CO & NY Socrata APIs, a best-effort WA
+		// adapter, SEC EDGAR full-text search, and scaffolded state search-page
+		// adapters (VA/FL/TX/CA/IL/NJ/GA). Throttled to <= 1 request/second,
+		// cached in KV (30-day TTL), and returns partial results with
+		// sources_checked / sources_failed rather than failing the whole call.
+		// Inherits the same access model as the other tools (no separate tier
+		// gate exists in this Worker).
+		// -------------------------------------------------------------------
+		this.server.registerTool(
+			"corporate_registry_search",
+			{
+				description:
+					"Search FREE official public corporate registries (no OpenCorporates or paid APIs) for a company or officer name. Sources: Colorado and New York official Socrata APIs, a best-effort Washington SoS adapter, SEC EDGAR full-text search (federal), and public state search pages (VA/FL/TX/CA/IL/NJ/GA, wired incrementally). Throttled to 1 request/second and cached 30 days. Returns partial results with sources_checked and sources_failed rather than failing if one portal is unavailable. Officer names are normalized to cross-reference with officer_network.",
+				inputSchema: {
+					name: z.string().describe("Company or officer name to search for (required)."),
+					state: z
+						.string()
+						.optional()
+						.describe(
+							"Optional two-letter state code or name to narrow the search (e.g. 'CO', 'Texas').",
+						),
+					search_type: z
+						.enum(["company", "officer"])
+						.describe(
+							"Whether 'name' is a company name or an officer/person name (required).",
+						),
+				},
+			},
+			async ({ name, state, search_type }) => {
+				const env = this.env as Cloudflare.Env;
+
+				let outcome: CorpRegistryOutcome;
+				try {
+					outcome = await corporateRegistrySearchCore(env, { name, state, search_type });
+				} catch (e) {
+					return errorResult((e as Error).message);
+				}
+
+				const lines: string[] = [
+					`Corporate Registry Search — ${search_type}: "${name}"${state ? ` (${state})` : ""}`,
+					outcome.cached ? "(served from cache)" : "",
+					"",
+					`Matches: ${outcome.matches.length}`,
+					`Sources checked: ${outcome.sources_checked.join(", ") || "none"}`,
+					`Sources failed: ${outcome.sources_failed.join("; ") || "none"}`,
+					"",
+				];
+				if (outcome.matches.length === 0) {
+					lines.push("No matches found in the sources that responded.");
+				} else {
+					outcome.matches.forEach((m, i) => {
+						lines.push(`[${i + 1}] ${m.entity_name || "(unnamed entity)"}`);
+						lines.push(`    Jurisdiction: ${fmt(m.jurisdiction)}`);
+						lines.push(`    Status: ${fmt(m.status)}`);
+						lines.push(`    Formation Date: ${fmt(m.formation_date)}`);
+						lines.push(`    Registered Agent: ${fmt(m.registered_agent)}`);
+						lines.push(`    Principal Address: ${fmt(m.principal_address)}`);
+						lines.push(
+							`    Officers: ${m.officers.length ? m.officers.join("; ") : "N/A"}`,
+						);
+						lines.push(`    Source: ${fmt(m.source_url)}`);
+						lines.push(`    Retrieved At: ${fmt(m.retrieved_at)}`);
+						lines.push("");
+					});
+				}
+
+				return textResult(lines.join("\n"));
 			},
 		);
 	}

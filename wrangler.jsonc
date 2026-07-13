@@ -22,6 +22,14 @@
 			},
 		],
 	},
+	// KV cache for corporate_registry_search (30-day TTL). Left commented so
+	// deploys stay green until the namespace exists — the tool runs without a
+	// cache while this is absent. To enable caching:
+	//   1. wrangler kv namespace create CORP_REGISTRY_CACHE
+	//   2. uncomment the block below and paste the returned id.
+	// "kv_namespaces": [
+	// 	{ "binding": "CORP_REGISTRY_CACHE", "id": "<paste-kv-namespace-id-here>" },
+	// ],
 	"observability": {
 		"enabled": true,
 	},
