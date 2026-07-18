@@ -815,7 +815,7 @@ export class MyMCP extends McpAgent {
 					let data: Record<string, unknown>;
 					try {
 						data = await callGateway(env, RPC_LOOKUP_CARRIER_CACHED, {
-							dot_number,
+							p_dot: dot_number,
 						});
 					} catch (e) {
 						return errorResult((e as Error).message);
@@ -1915,7 +1915,7 @@ export class MyMCP extends McpAgent {
 				let data: Record<string, unknown>;
 				try {
 					data = await callGateway(env, RPC_INSURANCE_COVERAGE_CHECK, {
-						dot_number,
+						p_dot: dot_number,
 					});
 				} catch (e) {
 					return errorResult((e as Error).message);
@@ -1950,7 +1950,7 @@ export class MyMCP extends McpAgent {
 				const env = this.env as Cloudflare.Env;
 				let data: Record<string, unknown>;
 				try {
-					data = await callGateway(env, RPC_CORRIDOR_HOT_SPOTS, { limit });
+					data = await callGateway(env, RPC_CORRIDOR_HOT_SPOTS, { p_limit: limit });
 				} catch (e) {
 					return errorResult((e as Error).message);
 				}
@@ -1977,7 +1977,7 @@ export class MyMCP extends McpAgent {
 				const env = this.env as Cloudflare.Env;
 				let data: Record<string, unknown>;
 				try {
-					data = await callGateway(env, RPC_SANCTIONS_SCREEN, { dot_number });
+					data = await callGateway(env, RPC_SANCTIONS_SCREEN, { p_dot: dot_number });
 				} catch (e) {
 					return errorResult((e as Error).message);
 				}
@@ -2013,9 +2013,11 @@ export class MyMCP extends McpAgent {
 			},
 			async ({ days, type }) => {
 				const env = this.env as Cloudflare.Env;
+				const params: Record<string, unknown> = { p_days: days };
+				if (type !== undefined) params.p_type = type;
 				let data: Record<string, unknown>;
 				try {
-					data = await callGateway(env, RPC_RECENT_ALERTS, { days, type });
+					data = await callGateway(env, RPC_RECENT_ALERTS, params);
 				} catch (e) {
 					return errorResult((e as Error).message);
 				}
