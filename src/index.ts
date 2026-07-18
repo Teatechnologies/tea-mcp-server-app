@@ -37,6 +37,12 @@ const RPC_CHAMELEON_RISK = "score_chameleon_risk";
 const RPC_NETWORK_SEARCH = "network_builder_search";
 const RPC_CARRIERS_BY_PHONE = "get_carriers_by_phone";
 const RPC_INVESTIGATE_DOT = "investigate_dot";
+// TEA census-cache fallback for lookup_carrier when live QCMobile is unavailable.
+const RPC_LOOKUP_CARRIER_CACHED = "mcp_lookup_carrier_cached";
+const RPC_INSURANCE_COVERAGE_CHECK = "mcp_insurance_coverage_check";
+const RPC_CORRIDOR_HOT_SPOTS = "mcp_corridor_hot_spots";
+const RPC_SANCTIONS_SCREEN = "mcp_sanctions_screen";
+const RPC_RECENT_ALERTS = "mcp_recent_alerts";
 
 // FMCSA QCMobile live carrier endpoint (identity / authority / OOS status).
 // The DOT number and webKey are interpolated at call time.
@@ -802,18 +808,44 @@ export class MyMCP extends McpAgent {
 			async ({ dot_number, mc_number }) => {
 				const env = this.env as Cloudflare.Env;
 
+				// Fallback: when live QCMobile is unavailable (non-200, timeout, or
+				// fetch error), serve carrier identity from the TEA census cache via
+				// the gateway. Formatted like the other gateway-backed tools.
+				const serveFromCache = async () => {
+					let data: Record<string, unknown>;
+					try {
+						data = await callGateway(env, RPC_LOOKUP_CARRIER_CACHED, {
+							dot_number,
+						});
+					} catch (e) {
+						return errorResult((e as Error).message);
+					}
+					const lines: string[] = [
+						"Live FMCSA QCMobile is currently unavailable; serving carrier identity from TEA census cache (authority/OOS status requires the live API).",
+						"",
+					];
+					lines.push(...renderValue(data, ""));
+					return textResult(lines.join("\n"));
+				};
+
 				// --- Live FMCSA QCMobile lookup (never from Supabase) ---
+				let webKey: string;
+				try {
+					webKey = requireSecret(env.QCMOBILE_WEBKEY, "QCMOBILE_WEBKEY");
+				} catch (e) {
+					return errorResult((e as Error).message);
+				}
+
 				let carrier: Record<string, unknown> = {};
 				try {
-					const webKey = requireSecret(env.QCMOBILE_WEBKEY, "QCMOBILE_WEBKEY");
+					// 8-second timeout: a slow QCMobile falls back to the cache.
 					const resp = await fetch(QCMOBILE_CARRIER_URL(dot_number, webKey), {
 						headers: { Accept: "application/json" },
+						signal: AbortSignal.timeout(8000),
 					});
 					const raw = await resp.text();
 					if (!resp.ok) {
-						return errorResult(
-							`FMCSA QCMobile returned ${resp.status} ${resp.statusText} for DOT ${dot_number}.`,
-						);
+						return await serveFromCache();
 					}
 					let parsed: unknown;
 					try {
@@ -839,8 +871,9 @@ export class MyMCP extends McpAgent {
 					if (!carrier || Object.keys(carrier).length === 0) {
 						return errorResult(`No FMCSA carrier record found for DOT ${dot_number}.`);
 					}
-				} catch (e) {
-					return errorResult((e as Error).message);
+				} catch {
+					// Timeout or network/fetch error — serve identity from the cache.
+					return await serveFromCache();
 				}
 
 				// --- Extract readable fields defensively ---
@@ -1857,6 +1890,140 @@ export class MyMCP extends McpAgent {
 					});
 				}
 
+				return textResult(lines.join("\n"));
+			},
+		);
+
+		// -------------------------------------------------------------------
+		// Tool 20 — insurance_coverage_check
+		// Full insurance-gap analysis for a carrier (gateway RPC).
+		// -------------------------------------------------------------------
+		this.server.registerTool(
+			"insurance_coverage_check",
+			{
+				description:
+					"Full insurance-gap analysis for a carrier: whether coverage is in force today, lapse history over 24 months, crashes that occurred during coverage lapses, current insurer quality scores, and Risk Retention Group instability flags.",
+				inputSchema: {
+					dot_number: z
+						.string()
+						.regex(/^\d+$/, "DOT number must contain only digits.")
+						.describe("USDOT number of the carrier (required)."),
+				},
+			},
+			async ({ dot_number }) => {
+				const env = this.env as Cloudflare.Env;
+				let data: Record<string, unknown>;
+				try {
+					data = await callGateway(env, RPC_INSURANCE_COVERAGE_CHECK, {
+						dot_number,
+					});
+				} catch (e) {
+					return errorResult((e as Error).message);
+				}
+				const lines: string[] = [`Insurance Coverage Check — DOT ${dot_number}`, ""];
+				lines.push(...renderValue(data, ""));
+				return textResult(lines.join("\n"));
+			},
+		);
+
+		// -------------------------------------------------------------------
+		// Tool 21 — corridor_hot_spots
+		// National illicit-activity hot spots along freight corridors (gateway RPC).
+		// -------------------------------------------------------------------
+		this.server.registerTool(
+			"corridor_hot_spots",
+			{
+				description:
+					"National illicit-activity hot spots along freight corridors: top convergence ZIPs (shared-identifier fraud clustering) and top composite-risk ZIPs (crash density, measured border proximity, ZIP-level violation rates).",
+				inputSchema: {
+					limit: z
+						.number()
+						.int()
+						.min(1)
+						.max(50)
+						.optional()
+						.default(10)
+						.describe("Number of hot-spot ZIPs to return (default 10, max 50)."),
+				},
+			},
+			async ({ limit }) => {
+				const env = this.env as Cloudflare.Env;
+				let data: Record<string, unknown>;
+				try {
+					data = await callGateway(env, RPC_CORRIDOR_HOT_SPOTS, { limit });
+				} catch (e) {
+					return errorResult((e as Error).message);
+				}
+				const lines: string[] = [`Corridor Hot Spots — top ${limit}`, ""];
+				lines.push(...renderValue(data, ""));
+				return textResult(lines.join("\n"));
+			},
+		);
+
+		// -------------------------------------------------------------------
+		// Tool 22 — sanctions_screen
+		// Screen a carrier against sanctions / exclusion / law-enforcement lists.
+		// -------------------------------------------------------------------
+		this.server.registerTool(
+			"sanctions_screen",
+			{
+				description:
+					"Screen a carrier against 19+ sanctions, exclusion, and law-enforcement lists (OFAC SDN, SAM exclusions, UN/EU/UK/Canada, Interpol, Europol, FBI, World Bank debarments, ICIJ Offshore Leaks cross-reference). Returns any matches with the source list.",
+				inputSchema: {
+					dot_number: z.string().describe("USDOT number of the carrier (required)."),
+				},
+			},
+			async ({ dot_number }) => {
+				const env = this.env as Cloudflare.Env;
+				let data: Record<string, unknown>;
+				try {
+					data = await callGateway(env, RPC_SANCTIONS_SCREEN, { dot_number });
+				} catch (e) {
+					return errorResult((e as Error).message);
+				}
+				const lines: string[] = [`Sanctions Screen — DOT ${dot_number}`, ""];
+				lines.push(...renderValue(data, ""));
+				return textResult(lines.join("\n"));
+			},
+		);
+
+		// -------------------------------------------------------------------
+		// Tool 23 — recent_alerts
+		// Recent TEA platform alerts feed (gateway RPC).
+		// -------------------------------------------------------------------
+		this.server.registerTool(
+			"recent_alerts",
+			{
+				description:
+					"Recent TEA platform alerts: new-authority chameleon detections at registration, ghost-fleet flags, reincarnation matches, and watchlist hits. Machine-readable feed for downstream alerting.",
+				inputSchema: {
+					days: z
+						.number()
+						.int()
+						.min(1)
+						.max(90)
+						.optional()
+						.default(7)
+						.describe("Look-back window in days (default 7, max 90)."),
+					type: z
+						.enum(["new_authority", "ghost_fleet", "reincarnation", "watchlist"])
+						.optional()
+						.describe("Optional alert type to filter on."),
+				},
+			},
+			async ({ days, type }) => {
+				const env = this.env as Cloudflare.Env;
+				let data: Record<string, unknown>;
+				try {
+					data = await callGateway(env, RPC_RECENT_ALERTS, { days, type });
+				} catch (e) {
+					return errorResult((e as Error).message);
+				}
+				const lines: string[] = [
+					`Recent Alerts — last ${days} day(s)${type ? `, type: ${type}` : ""}`,
+					"",
+				];
+				lines.push(...renderValue(data, ""));
 				return textResult(lines.join("\n"));
 			},
 		);
