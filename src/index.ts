@@ -195,7 +195,7 @@ function renderSignals(sig: Record<string, unknown>, indent: string): string[] {
 	out.push(`${indent}Dead-Carrier Equipment Resurfacing Here: ${n("reincarnation_alerts")}${sig.reincarnation_from_dot ? ` (latest from DOT ${fmt(sig.reincarnation_from_dot)})` : ""}`);
 	out.push(`${indent}Fleet: ${fmt(sig.fleet_vins)} power-unit VINs in 24m vs ${fmt(sig.fleet_declared)} declared (ratio ${fmt(sig.fleet_ratio)})${b("fleet_inflated") ? " — INFLATED" : ""}`);
 	if (sig.inspections_24m !== undefined) {
-		out.push(`${indent}No Recordable Plate: ${n("no_plate_insp_24m")} of ${n("inspections_24m")} inspections in 24m (temp tag / none / paper)${b("no_plate_ops") ? " — NO_PLATE_OPS" : ""}`);
+		out.push(`${indent}Temp / Applied-For Tags: ${n("temp_tag_insp_24m")} of ${n("inspections_24m")} inspections in 24m${b("paper_tags") ? " — PAPER_TAGS (interstate, on paper past new-entrant age)" : ""}`);
 	}
 	out.push(`${indent}Prior Revocation: ${fmt(sig.prior_revocation)} · Sanctions: ${fmt(sig.sanctions_hit)}${sig.sanctions_sources ? ` (${fmt(sig.sanctions_sources)})` : ""}`);
 	out.push(`${indent}Insurance Cancel Notices (30d): ${n("insurance_cancel_30d")} · Revocation Notices (90d): ${n("revoke_notice_90d")}`);
@@ -1445,7 +1445,7 @@ export class MyMCP extends McpAgent {
 			"reincarnation_network",
 			{
 				description:
-					"Both senses of reincarnation for a DOT, labeled: (1) equipment — a dead carrier's truck or real plate turning up under this DOT (what the TEA wire's REINCARNATION flag means; placeholder plates like TEMP/NONE are excluded and surface as NO_PLATE_OPS instead); (2) prior-revocation links — a prior DOT declared on the MCS-150 or a successor that declared this one.",
+					"Both senses of reincarnation for a DOT, labeled: (1) equipment — a dead carrier's truck or real plate turning up under this DOT (what the TEA wire's REINCARNATION flag means; placeholder plates like TEMP/NONE are excluded; interstate carriers running on temp tags surface as PAPER_TAGS instead); (2) prior-revocation links — a prior DOT declared on the MCS-150 or a successor that declared this one.",
 				inputSchema: {
 					dot_number: z.string().describe("USDOT number of the carrier (required)."),
 				},
