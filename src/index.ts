@@ -43,6 +43,14 @@ const RPC_INSURANCE_COVERAGE_CHECK = "mcp_insurance_coverage_check";
 const RPC_CORRIDOR_HOT_SPOTS = "mcp_corridor_hot_spots";
 const RPC_SANCTIONS_SCREEN = "mcp_sanctions_screen";
 const RPC_RECENT_ALERTS = "mcp_recent_alerts";
+// 2026-09-13: the v2 signals engine (carrier_signals_compute) is what the wire, dd_feed_public
+// and theteaintel.com score from. chameleon_risk_score, reincarnation_network and
+// investigate_dot read it so the MCP stops disagreeing with the wire on the same DOT.
+const RPC_CARRIER_SIGNALS = "mcp_carrier_signals";
+// reincarnation_alerts: a dead carrier's truck or plate turning up under this DOT. This is
+// what the wire's REINCARNATION badge means. get_reincarnation_network (reincarnation_watch)
+// is the other sense of the word: a prior-revocation DOT link off the MCS-150.
+const RPC_REINCARNATION_ALERTS = "mcp_reincarnation_alerts";
 
 // FMCSA QCMobile live carrier endpoint (identity / authority / OOS status).
 // The DOT number and webKey are interpolated at call time.
@@ -146,6 +154,53 @@ function renderValue(value: unknown, indent: string): string[] {
 		return out;
 	}
 	return [`${indent}${fmt(value)}`];
+}
+
+/** Chameleon score bands, matching the chameleon_master_index view over carrier_signals. */
+function chameleonTier(score: number): string {
+	if (score >= 75) return "CRITICAL";
+	if (score >= 50) return "HIGH";
+	if (score >= 25) return "MEDIUM";
+	return "LOW";
+}
+
+/**
+ * Render the v2 signals row (carrier_signals_compute output) as the block every
+ * chameleon-facing tool shares: one score, the flags behind it, the identity
+ * and equipment facts, and where the operation went if a successor was found.
+ * Equipment evidence is capped at 40 points server-side, so a carrier cannot
+ * reach CRITICAL on shared trucks alone; the line says so when that is the case.
+ */
+function renderSignals(sig: Record<string, unknown>, indent: string): string[] {
+	if (sig.known === false) return [`${indent}Not in the FMCSA census.`];
+	const n = (k: string) => Number(sig[k] ?? 0);
+	const b = (k: string) => sig[k] === true;
+	const score = n("chameleon_score");
+	const flags = Array.isArray(sig.signal_flags) ? (sig.signal_flags as unknown[]).map(String) : [];
+	const identityLinked =
+		b("officer_shared_revoked") || b("email_shared_revoked") || n("address_stack") >= 5 ||
+		n("phone_stack") >= 3 || b("transfer_flag") || n("same_session_clusters") > 0;
+	const equipmentOnly = !identityLinked && flags.some((f) => /^(VIN_|REINCARNATION|FLEET_INFLATED|GHOST_FLEET)/.test(f));
+
+	const out: string[] = [];
+	out.push(`${indent}Chameleon Score: ${score} (${chameleonTier(score)})`);
+	out.push(`${indent}Signal Flags: ${flags.length ? flags.join(", ") : "(none)"}`);
+	if (equipmentOnly) {
+		out.push(`${indent}Basis: equipment only (shared trucks/plates); no officer, address, phone or email link to another carrier. Equipment evidence is capped at 40 points.`);
+	}
+	out.push(`${indent}Officer Shared With: ${fmt(sig.officer_shared)} carrier(s)${b("officer_shared_revoked") ? " (one inactive/revoked)" : ""}`);
+	out.push(`${indent}Email Shared With: ${fmt(sig.email_stack)} carrier(s)${b("email_shared_revoked") ? " (one inactive/revoked)" : ""}`);
+	out.push(`${indent}Address Stack: ${fmt(sig.address_stack)} · Phone Stack: ${fmt(sig.phone_stack)}`);
+	out.push(`${indent}VIN Crossover (24m): ${n("vin_crossover_24m")} carrier(s)${b("vin_crossover_revoked") ? ", at least one inactive" : ""} · VIN Clone Tier: ${fmt(sig.vin_clone_tier)}`);
+	out.push(`${indent}Dead-Carrier Equipment Resurfacing Here: ${n("reincarnation_alerts")}${sig.reincarnation_from_dot ? ` (latest from DOT ${fmt(sig.reincarnation_from_dot)})` : ""}`);
+	out.push(`${indent}Fleet: ${fmt(sig.fleet_vins)} power-unit VINs in 24m vs ${fmt(sig.fleet_declared)} declared (ratio ${fmt(sig.fleet_ratio)})${b("fleet_inflated") ? " — INFLATED" : ""}`);
+	out.push(`${indent}Prior Revocation: ${fmt(sig.prior_revocation)} · Sanctions: ${fmt(sig.sanctions_hit)}${sig.sanctions_sources ? ` (${fmt(sig.sanctions_sources)})` : ""}`);
+	out.push(`${indent}Insurance Cancel Notices (30d): ${n("insurance_cancel_30d")} · Revocation Notices (90d): ${n("revoke_notice_90d")}`);
+	out.push(`${indent}TEA Vetting Score: ${fmt(sig.tea_score)} (${fmt(sig.tea_tier)})`);
+	if (sig.successor_summary) {
+		out.push(`${indent}${String(sig.successor_strength).toUpperCase() === "STRONG" ? "Likely" : "Possible"} Successor: ${fmt(sig.successor_summary)}`);
+	}
+	return out;
 }
 
 /**
@@ -1387,23 +1442,32 @@ export class MyMCP extends McpAgent {
 			"reincarnation_network",
 			{
 				description:
-					"Reincarnation matches for a DOT based on officer/address/phone overlap — chameleon successor detection.",
+					"Both senses of reincarnation for a DOT, labeled: (1) equipment — a dead carrier's truck or plate turning up under this DOT (what the TEA wire's REINCARNATION flag means); (2) prior-revocation links — a prior DOT declared on the MCS-150 or a successor that declared this one.",
 				inputSchema: {
 					dot_number: z.string().describe("USDOT number of the carrier (required)."),
 				},
 			},
 			async ({ dot_number }) => {
 				const env = this.env as Cloudflare.Env;
-				let data: Record<string, unknown>;
-				try {
-					data = await callGateway(env, RPC_REINCARNATION_NETWORK, {
-						p_dot_number: String(parseInt(dot_number, 10)),
-					});
-				} catch (e) {
-					return errorResult((e as Error).message);
-				}
+				const dot = String(parseInt(dot_number, 10));
 				const lines: string[] = [`Reincarnation Network — DOT ${dot_number}`, ""];
-				lines.push(...renderValue(data, ""));
+
+				// Both calls are independent; a failure in one still reports the other.
+				lines.push("Dead-carrier equipment resurfacing under this DOT (VIN / plate):");
+				try {
+					const alerts = await callGateway(env, RPC_REINCARNATION_ALERTS, { p_dot: dot });
+					lines.push(...renderValue(alerts, "  "));
+				} catch (e) {
+					lines.push(`  Unavailable: ${(e as Error).message}`);
+				}
+				lines.push("");
+				lines.push("Prior-revocation links (MCS-150 prior DOT / declared successor):");
+				try {
+					const watch = await callGateway(env, RPC_REINCARNATION_NETWORK, { p_dot_number: dot });
+					lines.push(...renderValue(watch, "  "));
+				} catch (e) {
+					lines.push(`  Unavailable: ${(e as Error).message}`);
+				}
 				return textResult(lines.join("\n"));
 			},
 		);
@@ -1444,23 +1508,38 @@ export class MyMCP extends McpAgent {
 			"chameleon_risk_score",
 			{
 				description:
-					"Chameleon risk score 0-100 with tier, connection counts, and top shared-VIN partner.",
+					"Chameleon score 0-100 with tier and the signal flags behind it — the same number the TEA wire and carrier profile show — plus identity/equipment facts, successor if found, and the top shared-VIN partner.",
 				inputSchema: {
 					dot_number: z.string().describe("USDOT number of the carrier (required)."),
 				},
 			},
 			async ({ dot_number }) => {
 				const env = this.env as Cloudflare.Env;
-				let data: Record<string, unknown>;
+				const dot = String(parseInt(dot_number, 10));
+				let sig: Record<string, unknown>;
 				try {
-					data = await callGateway(env, RPC_CHAMELEON_RISK, {
-						seed_dot: String(parseInt(dot_number, 10)),
-					});
+					sig = await callGateway(env, RPC_CARRIER_SIGNALS, { p_dot: dot });
 				} catch (e) {
 					return errorResult((e as Error).message);
 				}
 				const lines: string[] = [`Chameleon Risk Score — DOT ${dot_number}`, ""];
-				lines.push(...renderValue(data, ""));
+				lines.push(...renderSignals(sig, ""));
+
+				// The old connection-count RPC still has the one thing the signals row does
+				// not: which carrier shares the most trucks. Best-effort, never fatal.
+				try {
+					const legacy = await callGateway(env, RPC_CHAMELEON_RISK, { seed_dot: dot });
+					const row = Array.isArray(legacy) ? (legacy[0] as Record<string, unknown> | undefined) : legacy;
+					if (row && (row.highest_vin_partner_dot || row.unique_connected_carriers)) {
+						lines.push("");
+						lines.push(`Shared-VIN Network: ${fmt(row.total_vin_connections)} VIN links across ${fmt(row.unique_connected_carriers)} carrier(s)`);
+						if (row.highest_vin_partner_dot) {
+							lines.push(`Top Shared-VIN Partner: ${fmt(row.highest_vin_partner_name)} (DOT ${fmt(row.highest_vin_partner_dot)}) · ${fmt(row.highest_vin_count)} VINs`);
+						}
+					}
+				} catch {
+					// Optional enrichment only.
+				}
 				return textResult(lines.join("\n"));
 			},
 		);
@@ -1555,6 +1634,20 @@ export class MyMCP extends McpAgent {
 				}
 				const lines: string[] = [`Investigate DOT — ${dot_number}`, ""];
 				lines.push(...renderValue(data, ""));
+
+				// The bundle above is officer/address/phone/email only. A carrier with zero
+				// connections there can still be all trucks; show the v2 signals next to it
+				// so "Connection Count: 0" is never read as "nothing here".
+				lines.push("");
+				lines.push("Identity and equipment signals (v2, same engine as the wire):");
+				try {
+					const sig = await callGateway(env, RPC_CARRIER_SIGNALS, {
+						p_dot: String(parseInt(dot_number, 10)),
+					});
+					lines.push(...renderSignals(sig, "  "));
+				} catch (e) {
+					lines.push(`  Unavailable: ${(e as Error).message}`);
+				}
 				return textResult(lines.join("\n"));
 			},
 		);
