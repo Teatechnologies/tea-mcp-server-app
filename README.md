@@ -63,3 +63,12 @@ With mcp-remote:
 ```bash
 npx mcp-remote https://tea-mcp-server-app.robertcr8.workers.dev/mcp --header "Authorization: Bearer <key>"
 ```
+
+### Signing in from claude.ai (OAuth)
+
+The same tools are also served at `/sso/mcp` behind OAuth with dynamic client registration, so claude.ai and
+other MCP clients can add `https://tea-mcp-server-app.robertcr8.workers.dev/sso/mcp` as a connector with no
+header. The sign-in page (`/authorize`, `src/sso.ts`) sends a Supabase email one-time code to the user's TEA /
+TruckVerifi account; on success the grant carries their user id, API plan and a self-serve key named "Claude MCP"
+(created once through `my_api_key_create`, remembered in the `OAUTH_KV` namespace), which the Capacity Board tools
+use. Accounts without an API plan can still sign in; the board tools then explain what to enable at theteaintel.com/api.
