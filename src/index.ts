@@ -1,6 +1,8 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { McpAgent } from "agents/mcp";
 import { z } from "zod";
+import OAuthProvider, { type OAuthHelpers } from "@cloudflare/workers-oauth-provider";
+import { handleAuthorize } from "./sso";
 
 // ---------------------------------------------------------------------------
 // Configuration constants — easy to correct in one place.
@@ -76,6 +78,11 @@ declare global {
 			SUPABASE_KEY: string;
 			QCMOBILE_WEBKEY: string;
 			TEA_API_KEY: string;
+			// Sign-in for /sso/mcp (see sso.ts): Supabase anon key for the email-code login,
+			// the OAuth provider's KV store, and the provider helpers it injects.
+			SUPABASE_ANON_KEY: string;
+			OAUTH_KV: KVNamespace;
+			OAUTH_PROVIDER: OAuthHelpers;
 			// Optional KV cache for corporate_registry_search (30-day TTL).
 			// Optional so the tool degrades gracefully before the namespace exists.
 			CORP_REGISTRY_CACHE?: KVNamespace;
@@ -91,6 +98,11 @@ declare global {
  */
 interface McpProps extends Record<string, unknown> {
 	userApiKey?: string;
+	// Set by the /sso/mcp sign-in (sso.ts): who the user is and whether a key could be made.
+	viaSso?: boolean;
+	userId?: string;
+	email?: string;
+	apiPlan?: string;
 }
 
 const BOARD_KEY_REQUIRED =
@@ -2158,10 +2170,18 @@ export class MyMCP extends McpAgent {
 			const key = (this.props as McpProps | undefined)?.userApiKey;
 			return key && key.trim() !== "" ? key.trim() : null;
 		};
+		const boardKeyMissing = (): string => {
+			const p = (this.props as McpProps | undefined) ?? {};
+			if (!p.viaSso) return BOARD_KEY_REQUIRED;
+			if (p.apiPlan === "none")
+				return `Your TEA account (${p.email ?? "signed in"}) has no API plan, so the Capacity Board tools can't run yet. API access comes with the Pro and Enterprise plans or pay-per-call billing at https://www.theteaintel.com/api. Once that's set, disconnect and reconnect this server.`;
+			if (p.apiPlan === "suspended") return "This TEA account is suspended.";
+			return `Signed in as ${p.email ?? "your account"}, but a "Claude MCP" API key could not be created (you may be at the key limit). Revoke an unused key at https://www.theteaintel.com/api, then disconnect and reconnect this server.`;
+		};
 		const boardCall = async (rpcName: string, params: Record<string, unknown>) => {
 			const env = this.env as Cloudflare.Env;
 			const key = boardKey();
-			if (!key) throw new Error(BOARD_KEY_REQUIRED);
+			if (!key) throw new Error(boardKeyMissing());
 			const data = (await callGateway(env, rpcName, params, key)) as unknown;
 			// The board functions answer {error: "..."} for access and validation problems.
 			if (data && !Array.isArray(data) && typeof data === "object" && "error" in (data as Record<string, unknown>)) {
@@ -2295,8 +2315,14 @@ export class MyMCP extends McpAgent {
 	}
 }
 
-export default {
-	fetch(request: Request, env: Env, ctx: ExecutionContext) {
+// Two ways in:
+//   /mcp      — open, as it always was. Tools use the Worker's TEA_API_KEY; a caller may add
+//               their own key as a header for the Capacity Board tools.
+//   /sso/mcp  — OAuth (dynamic client registration, so claude.ai and other MCP clients can
+//               connect). The user signs in with a Supabase email code; the grant carries
+//               their id, plan and a self-serve key (see sso.ts).
+const openRoutes = {
+	async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
 		const url = new URL(request.url);
 
 		if (url.pathname === "/mcp") {
@@ -2307,6 +2333,37 @@ export default {
 			return MyMCP.serve("/mcp").fetch(request, env, ctx);
 		}
 
+		if (url.pathname === "/authorize") {
+			return handleAuthorize(request, env as unknown as Parameters<typeof handleAuthorize>[1]);
+		}
+
+		if (url.pathname === "/") {
+			return new Response(
+				"TEA Highway Intelligence MCP server.\n\n" +
+					"  /mcp      open endpoint (Streamable HTTP)\n" +
+					"  /sso/mcp  OAuth endpoint: sign in with your TEA / TruckVerifi account for the Capacity Board tools\n",
+				{ headers: { "Content-Type": "text/plain; charset=utf-8" } },
+			);
+		}
+
 		return new Response("Not found", { status: 404 });
 	},
 };
+
+export default new OAuthProvider<Env>({
+	apiRoute: "/sso/mcp",
+	apiHandler: MyMCP.serve("/sso/mcp") as unknown as ExportedHandlerWithFetch<Env>,
+	defaultHandler: openRoutes,
+	authorizeEndpoint: "/authorize",
+	tokenEndpoint: "/token",
+	clientRegistrationEndpoint: "/register",
+	scopesSupported: ["boards"],
+	// RFC 9728: what /.well-known/oauth-protected-resource advertises for the OAuth route.
+	resourceMetadata: {
+		resource: "https://tea-mcp-server-app.robertcr8.workers.dev/sso/mcp",
+		resource_name: "TEA Highway Intelligence",
+		scopes_supported: ["boards"],
+	},
+});
+
+type ExportedHandlerWithFetch<E> = ExportedHandler<E> & { fetch: NonNullable<ExportedHandler<E>["fetch"]> };

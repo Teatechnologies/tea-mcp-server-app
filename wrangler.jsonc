@@ -27,7 +27,14 @@
 	// cache-less lookup if this is ever removed.
 	"kv_namespaces": [
 		{ "binding": "CORP_REGISTRY_CACHE", "id": "0b37968aa9874b7abd4b3ccadfb3c885" },
+		// OAuth provider state (clients, grants, tokens) and the per-user "Claude MCP" API key.
+		{ "binding": "OAUTH_KV", "id": "fce53e3393f94f08bba23b0a6d4e9dae" },
 	],
+	// Public anon key of the shared Supabase project; the /sso sign-in uses it for the
+	// email-code endpoints and the user's own RPCs.
+	"vars": {
+		"SUPABASE_ANON_KEY": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImNnZHpiY3N2Ym1icmR6Z3NqaXR3Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzA5NDY4NDUsImV4cCI6MjA4NjUyMjg0NX0.z0SI2uoYP7xDxN6RcQ697bUAUuflK7v58pByvmd3xqM",
+	},
 	"observability": {
 		"enabled": true,
 	},
