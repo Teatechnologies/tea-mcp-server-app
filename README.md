@@ -49,3 +49,17 @@ Update with this configuration:
 ```
 
 Restart Claude and you should see the tools become available.
+
+## Capacity Board tools (TruckVerifi)
+
+`capacity_boards`, `capacity_board_cards`, `capacity_board_add_carrier` and `capacity_board_move_card` act as a
+specific TruckVerifi user, so the MCP connection must carry that user's own TEA API key (created at
+https://www.theteaintel.com/api) as `Authorization: Bearer <key>` or `x-api-key`. The fetch handler passes it to the
+tools as `this.props.userApiKey`; the gateway (`tea-mcp-rpc`) resolves the key's owner and runs the board RPCs as
+them. Without a key those four tools explain how to connect; every other tool keeps using the Worker's `TEA_API_KEY`.
+
+With mcp-remote:
+
+```bash
+npx mcp-remote https://tea-mcp-server-app.robertcr8.workers.dev/mcp --header "Authorization: Bearer <key>"
+```
