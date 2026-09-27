@@ -214,7 +214,8 @@ function renderSignals(sig: Record<string, unknown>, indent: string): string[] {
 	const flags = Array.isArray(sig.signal_flags) ? (sig.signal_flags as unknown[]).map(String) : [];
 	const identityLinked =
 		b("officer_shared_revoked") || b("email_shared_revoked") || n("address_stack") >= 5 ||
-		n("phone_stack") >= 3 || b("transfer_flag") || n("same_session_clusters") > 0;
+		n("phone_stack") >= 3 || b("transfer_flag") || n("same_session_clusters") > 0 || b("officer_changed") ||
+		n("links_officer") > 0 || n("links_address") > 0 || n("links_phone") > 0;
 	const equipmentOnly = !identityLinked && flags.some((f) => /^(VIN_|REINCARNATION|FLEET_INFLATED|GHOST_FLEET)/.test(f));
 
 	const out: string[] = [];
@@ -226,7 +227,11 @@ function renderSignals(sig: Record<string, unknown>, indent: string): string[] {
 	out.push(`${indent}Officer Shared With: ${fmt(sig.officer_shared)} carrier(s)${b("officer_shared_revoked") ? " (one inactive/revoked)" : ""}`);
 	out.push(`${indent}Email Shared With: ${fmt(sig.email_stack)} carrier(s)${b("email_shared_revoked") ? " (one inactive/revoked)" : ""}`);
 	out.push(`${indent}Address Stack: ${fmt(sig.address_stack)} · Phone Stack: ${fmt(sig.phone_stack)}`);
-	out.push(`${indent}VIN Crossover (24m): ${n("vin_crossover_24m")} carrier(s)${b("vin_crossover_revoked") ? ", at least one inactive" : ""} · VIN Clone Tier: ${fmt(sig.vin_clone_tier)}`);
+	// Stored links are census snapshots taken when the link was built; they can outlive the current record.
+	if (sig.links_officer !== undefined) {
+		out.push(`${indent}Stored Links (network table): officer ${n("links_officer")} · address ${n("links_address")} · phone ${n("links_phone")}${b("officer_changed") ? " — OFFICER CHANGED: the carrier moved away from an officer it shared with other carriers" : ""}`);
+	}
+	out.push(`${indent}VIN Crossover (24m, power units): ${n("vin_crossover_24m")} carrier(s)${b("vin_crossover_revoked") ? ", at least one inactive" : ""}${sig.vin_trailer_dots_24m !== undefined ? ` · Trailer/chassis sharing: ${n("vin_trailer_dots_24m")} carrier(s), not scored` : ""} · VIN Clone Tier: ${fmt(sig.vin_clone_tier)}`);
 	out.push(`${indent}Dead-Carrier Equipment Resurfacing Here: ${n("reincarnation_alerts")}${sig.reincarnation_from_dot ? ` (latest from DOT ${fmt(sig.reincarnation_from_dot)})` : ""}`);
 	out.push(`${indent}Fleet: ${fmt(sig.fleet_vins)} power-unit VINs in 24m vs ${fmt(sig.fleet_declared)} declared (ratio ${fmt(sig.fleet_ratio)})${b("fleet_inflated") ? " — INFLATED" : ""}`);
 	if (sig.inspections_24m !== undefined) {
