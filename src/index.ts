@@ -51,6 +51,13 @@ const RPC_CARRIER_SIGNALS = "mcp_carrier_signals";
 // what the wire's REINCARNATION badge means. get_reincarnation_network (reincarnation_watch)
 // is the other sense of the word: a prior-revocation DOT link off the MCS-150.
 const RPC_REINCARNATION_ALERTS = "mcp_reincarnation_alerts";
+// Capacity Boards (TruckVerifi carrier sourcing boards). The gateway injects the API-key owner's
+// user id as p_user_id, so these run as the connecting user and need that user's own key
+// (see McpProps): a shared TEA_API_KEY has no owner and the gateway answers 403 OWNER_REQUIRED.
+const RPC_BOARD_LIST = "mcp_board_list";
+const RPC_BOARD_MEMBERS = "mcp_board_members";
+const RPC_BOARD_ADD_MEMBER = "mcp_board_add_member";
+const RPC_BOARD_MOVE_MEMBER = "mcp_board_move_member";
 
 // FMCSA QCMobile live carrier endpoint (identity / authority / OOS status).
 // The DOT number and webKey are interpolated at call time.
@@ -75,6 +82,22 @@ declare global {
 		}
 	}
 }
+
+/**
+ * Per-connection props set by the fetch handler. A caller may connect with their own TEA API
+ * key (created at https://www.theteaintel.com/api) as `Authorization: Bearer <key>` or
+ * `x-api-key`; the Capacity Board tools act as that key's owner. The other tools keep using
+ * the Worker's TEA_API_KEY, so connecting without a key changes nothing for them.
+ */
+interface McpProps extends Record<string, unknown> {
+	userApiKey?: string;
+}
+
+const BOARD_KEY_REQUIRED =
+	"Capacity Board tools act as a TruckVerifi user, so this MCP connection needs your own TEA API key. " +
+	"Create one at https://www.theteaintel.com/api (Pro and Enterprise plans include it; pay-per-call is also available), " +
+	'then connect to this server with the header "Authorization: Bearer <your key>". ' +
+	'With mcp-remote: npx mcp-remote <server url>/mcp --header "Authorization: Bearer <your key>".';
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -269,9 +292,10 @@ async function callGateway(
 	env: Cloudflare.Env,
 	rpcName: string,
 	params: Record<string, unknown>,
+	apiKeyOverride?: string,
 ): Promise<Record<string, unknown>> {
 	const supabaseUrl = requireSecret(env.SUPABASE_URL, "SUPABASE_URL");
-	const teaApiKey = requireSecret(env.TEA_API_KEY, "TEA_API_KEY");
+	const teaApiKey = apiKeyOverride ?? requireSecret(env.TEA_API_KEY, "TEA_API_KEY");
 
 	const url = `${supabaseUrl.replace(/\/+$/, "")}${FUNCTIONS_BASE_PATH}/${FN_GATEWAY}`;
 
@@ -2125,6 +2149,149 @@ export class MyMCP extends McpAgent {
 				return textResult(lines.join("\n"));
 			},
 		);
+
+		// -------------------------------------------------------------------
+		// Capacity Boards — TruckVerifi's carrier sourcing boards, worked as the
+		// connecting user (their own TEA API key; see McpProps).
+		// -------------------------------------------------------------------
+		const boardKey = (): string | null => {
+			const key = (this.props as McpProps | undefined)?.userApiKey;
+			return key && key.trim() !== "" ? key.trim() : null;
+		};
+		const boardCall = async (rpcName: string, params: Record<string, unknown>) => {
+			const env = this.env as Cloudflare.Env;
+			const key = boardKey();
+			if (!key) throw new Error(BOARD_KEY_REQUIRED);
+			const data = (await callGateway(env, rpcName, params, key)) as unknown;
+			// The board functions answer {error: "..."} for access and validation problems.
+			if (data && !Array.isArray(data) && typeof data === "object" && "error" in (data as Record<string, unknown>)) {
+				const d = data as Record<string, unknown>;
+				const extra = d.stages ? ` Valid stages: ${(d.stages as unknown[]).map(String).join(", ")}.` : "";
+				throw new Error(`${String(d.error)}.${extra}`);
+			}
+			return data;
+		};
+		const stageLine = (stages: unknown): string =>
+			Array.isArray(stages)
+				? stages.map((st) => {
+						const o = st as Record<string, unknown>;
+						return `${fmt(o.name)} (${fmt(o.key)})`;
+					}).join(" → ")
+				: "N/A";
+
+		this.server.registerTool(
+			"capacity_boards",
+			{
+				description:
+					"List the TruckVerifi Capacity Boards (carrier sourcing boards, one per lane and equipment) you own or share through a team: board id, lane, equipment, vetting-score floor, stages and card count. Needs the connection's own TEA API key.",
+				inputSchema: {},
+			},
+			async () => {
+				let boards: unknown;
+				try {
+					boards = await boardCall(RPC_BOARD_LIST, {});
+				} catch (e) {
+					return errorResult((e as Error).message);
+				}
+				const list = Array.isArray(boards) ? (boards as Record<string, unknown>[]) : [];
+				if (list.length === 0) return textResult("No Capacity Boards on this account yet. Create one at https://www.truckverifi.com/groups.");
+				const lines: string[] = [`Capacity Boards (${list.length})`, ""];
+				for (const b of list) {
+					lines.push(`${fmt(b.name)} — board_id ${fmt(b.board_id)}`);
+					lines.push(`    Lane: ${fmt(b.lane_origin)} → ${fmt(b.lane_dest)} · Equipment: ${fmt(b.equipment)} · Score floor: ${fmt(b.score_floor)} · Cards: ${fmt(b.cards)}`);
+					lines.push(`    Stages: ${stageLine(b.stages)}`);
+					lines.push(`    Updated: ${fmt(b.updated_at)}`);
+				}
+				return textResult(lines.join("\n"));
+			},
+		);
+
+		this.server.registerTool(
+			"capacity_board_cards",
+			{
+				description:
+					"List the cards on one Capacity Board: member id, carrier name and DOT, stage, labels, vetting summary. Use capacity_boards to find the board_id. Needs the connection's own TEA API key.",
+				inputSchema: {
+					board_id: z.string().describe("Board id from capacity_boards (required)."),
+					stage_key: z.string().optional().describe("Only cards in this stage (stage key from capacity_boards)."),
+					include_shelved: z.boolean().optional().default(false).describe("Include shelved cards (default false)."),
+				},
+			},
+			async ({ board_id, stage_key, include_shelved }) => {
+				let cards: unknown;
+				try {
+					cards = await boardCall(RPC_BOARD_MEMBERS, { p_board_id: board_id });
+				} catch (e) {
+					return errorResult((e as Error).message);
+				}
+				let list = Array.isArray(cards) ? (cards as Record<string, unknown>[]) : [];
+				if (!include_shelved) list = list.filter((c) => !c.shelved);
+				if (stage_key) list = list.filter((c) => c.stage_key === stage_key);
+				if (list.length === 0) return textResult("No cards match on this board.");
+				const lines: string[] = [`Cards on board ${board_id} (${list.length})`, ""];
+				let current = "";
+				for (const c of list) {
+					const stage = String(c.stage_key ?? "");
+					if (stage !== current) {
+						current = stage;
+						lines.push(`[${stage}]`);
+					}
+					const labels = Array.isArray(c.labels) && c.labels.length ? ` · labels: ${(c.labels as unknown[]).map(String).join(", ")}` : "";
+					const shelved = c.shelved ? " · SHELVED" : "";
+					lines.push(`- ${fmt(c.title)} (${fmt(c.entity_type)}${c.dot_number ? ` DOT ${c.dot_number}` : ""}) — member_id ${fmt(c.member_id)}${labels}${shelved}`);
+					if (c.summary) lines.push(`    ${String(c.summary)}`);
+				}
+				return textResult(lines.join("\n"));
+			},
+		);
+
+		this.server.registerTool(
+			"capacity_board_add_carrier",
+			{
+				description:
+					"Add a carrier (by USDOT number) to a Capacity Board, with a vetting summary generated on the way in. If the carrier is already on the board it is un-shelved instead. Needs the connection's own TEA API key.",
+				inputSchema: {
+					board_id: z.string().describe("Board id from capacity_boards (required)."),
+					dot_number: z.string().describe("USDOT number of the carrier (required)."),
+					stage_key: z.string().optional().describe("Stage to place the card in (default: the board's first stage)."),
+				},
+			},
+			async ({ board_id, dot_number, stage_key }) => {
+				const dot = Number(String(dot_number).replace(/\D/g, ""));
+				if (!Number.isInteger(dot) || dot <= 0) return errorResult("dot_number must be a USDOT number.");
+				const params: Record<string, unknown> = { p_board_id: board_id, p_dot: dot };
+				if (stage_key) params.p_stage_key = stage_key;
+				let r: Record<string, unknown>;
+				try {
+					r = (await boardCall(RPC_BOARD_ADD_MEMBER, params)) as Record<string, unknown>;
+				} catch (e) {
+					return errorResult((e as Error).message);
+				}
+				if (r.status === "already on board") return textResult(`DOT ${dot} was already on this board (member_id ${fmt(r.member_id)}); it is now un-shelved.`);
+				return textResult(`Added DOT ${dot}${r.title ? ` (${String(r.title)})` : ""} to the board in stage ${fmt(r.stage_key)} — member_id ${fmt(r.member_id)}.`);
+			},
+		);
+
+		this.server.registerTool(
+			"capacity_board_move_card",
+			{
+				description:
+					"Move a Capacity Board card to another stage (for example Sourced → Priority → Quoted). Use capacity_board_cards for the member_id and capacity_boards for the stage keys. Needs the connection's own TEA API key.",
+				inputSchema: {
+					member_id: z.string().describe("Card id (member_id) from capacity_board_cards (required)."),
+					stage_key: z.string().describe("Target stage key from capacity_boards (required)."),
+				},
+			},
+			async ({ member_id, stage_key }) => {
+				let r: Record<string, unknown>;
+				try {
+					r = (await boardCall(RPC_BOARD_MOVE_MEMBER, { p_member_id: member_id, p_stage_key: stage_key })) as Record<string, unknown>;
+				} catch (e) {
+					return errorResult((e as Error).message);
+				}
+				return textResult(`Moved card ${fmt(r.member_id)} to stage ${fmt(r.stage_key)}.`);
+			},
+		);
 	}
 }
 
@@ -2133,6 +2300,10 @@ export default {
 		const url = new URL(request.url);
 
 		if (url.pathname === "/mcp") {
+			// A caller's own TEA API key rides along as props (see McpProps).
+			const auth = request.headers.get("Authorization") ?? "";
+			const userApiKey = (auth.startsWith("Bearer ") ? auth.slice(7) : (request.headers.get("x-api-key") ?? "")).trim();
+			(ctx as ExecutionContext & { props?: McpProps }).props = userApiKey ? { userApiKey } : {};
 			return MyMCP.serve("/mcp").fetch(request, env, ctx);
 		}
 
