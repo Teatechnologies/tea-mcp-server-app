@@ -2173,10 +2173,8 @@ export class MyMCP extends McpAgent {
 		const boardKeyMissing = (): string => {
 			const p = (this.props as McpProps | undefined) ?? {};
 			if (!p.viaSso) return BOARD_KEY_REQUIRED;
-			if (p.apiPlan === "none")
-				return `Your TEA account (${p.email ?? "signed in"}) has no API plan, so the Capacity Board tools can't run yet. API access comes with the Pro and Enterprise plans or pay-per-call billing at https://www.theteaintel.com/api. Once that's set, disconnect and reconnect this server.`;
 			if (p.apiPlan === "suspended") return "This TEA account is suspended.";
-			return `Signed in as ${p.email ?? "your account"}, but a "Claude MCP" API key could not be created (you may be at the key limit). Revoke an unused key at https://www.theteaintel.com/api, then disconnect and reconnect this server.`;
+			return `Signed in as ${p.email ?? "your account"}, but a "Claude MCP" board key could not be created (you may already have three). Revoke an unused key at https://www.theteaintel.com/api, then disconnect and reconnect this server.`;
 		};
 		const boardCall = async (rpcName: string, params: Record<string, unknown>) => {
 			const env = this.env as Cloudflare.Env;
