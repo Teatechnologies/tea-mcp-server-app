@@ -3,9 +3,10 @@
 // The Worker is its own OAuth authorization server (workers-oauth-provider, with dynamic
 // client registration so claude.ai can connect). The user proves who they are with a
 // Supabase email one-time code on their TEA / TruckVerifi account (same auth.users). On
-// success the grant carries the user's id, email, API plan and a self-serve TEA API key
-// named "Claude MCP" (created once and remembered in OAUTH_KV), which the Capacity Board
-// tools send to the gateway so the RPCs run as that user.
+// success the grant carries the user's id, email, API plan and a board-only TEA API key
+// named "Claude MCP" (my_board_key_create: no API plan needed, limited to the board RPCs;
+// created once and remembered in OAUTH_KV), which the Capacity Board tools send to the
+// gateway so the RPCs run as that user.
 import type { AuthRequest, OAuthHelpers } from "@cloudflare/workers-oauth-provider";
 
 export interface SsoEnv {
@@ -165,15 +166,15 @@ async function provisionKey(env: SsoEnv, userId: string, accessToken: string): P
 		await env.OAUTH_KV.delete(kvKey);
 	}
 
-	if (plan !== "included" && plan !== "metered") return { key: null, plan };
+	// A board-only key: any signed-in account can have one, so the plan does not gate it.
 	try {
-		const created = await supabaseRpc(env, accessToken, "my_api_key_create", { p_name: KEY_NAME });
+		const created = await supabaseRpc(env, accessToken, "my_board_key_create", { p_name: KEY_NAME });
 		if (typeof created === "string" && created.startsWith("tea_")) {
 			await env.OAUTH_KV.put(kvKey, created);
 			return { key: created, plan };
 		}
 	} catch {
-		/* e.g. key limit reached; the tool explains */
+		/* e.g. key limit reached or account suspended; the tool explains */
 	}
 	return { key: null, plan };
 }
