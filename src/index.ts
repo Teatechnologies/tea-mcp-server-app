@@ -18,8 +18,6 @@ const FUNCTIONS_BASE_PATH = "/functions/v1";
 // Edge Function names.
 const FN_CARRIER_SCORE = "carrier_score";
 const FN_CARRIER_LOOKUP = "carrier_lookup";
-// NOTE: this function name uses hyphens, not underscores.
-const FN_NEW_ENTRANT = "new-entrant-full-report";
 // Gateway Edge Function: POST { rpc, params } -> { rpc, data, data_source, as_of }.
 const FN_GATEWAY = "tea-mcp-rpc";
 // Dedicated VIN-network Edge Function: POST { dot_number } -> full object (no "data" wrapper).
@@ -53,6 +51,9 @@ const RPC_CARRIER_SIGNALS = "mcp_carrier_signals";
 // what the wire's REINCARNATION badge means. get_reincarnation_network (reincarnation_watch)
 // is the other sense of the word: a prior-revocation DOT link off the MCS-150.
 const RPC_REINCARNATION_ALERTS = "mcp_reincarnation_alerts";
+// 2026-10-04: data-only new-entrant workup. The tool used to call the new-entrant-full-report Edge Function, which is
+// the AI report writer: it needs a signed-in user (401 on an API key) and an existing investigation id.
+const RPC_NEW_ENTRANT_WORKUP = "mcp_new_entrant_workup";
 // Capacity Boards (TruckVerifi carrier sourcing boards). The gateway injects the API-key owner's
 // user id as p_user_id, so these run as the connecting user and need that user's own key
 // (see McpProps): a shared TEA_API_KEY has no owner and the gateway answers 403 OWNER_REQUIRED.
@@ -1083,129 +1084,40 @@ export class MyMCP extends McpAgent {
 			"new_entrant_workup",
 			{
 				description:
-					"Run a comprehensive FMCSA new-entrant fitness workup on a carrier by DOT number. Returns the full TEA new-entrant assessment — entity profile, authority/census, crashes, inspections, insurance, watchlists, network cross-references, the D1–D5 composite score and tier, and (if a Janus questionnaire exists) questionnaire contradiction analysis. Designed for federal investigators and FMCSA compliance reviews.",
+					"Run a new-entrant fitness workup on a carrier by DOT number. Returns a review level (HIGH / ELEVATED / ROUTINE) with the reasons, the entity profile (registration date and age, officers, contact details), chameleon signals, insurance in force and lapses, crashes, roadside activity, authority actions (revocation notices, which were withdrawn, completed revocations), sanctions and exclusion screening, and the carriers linked one hop out (shared trucks, phone, email, address, officer or insurance policy). Authority status, MC number and out-of-service orders come from lookup_carrier (live FMCSA QCMobile). Designed for federal investigators and FMCSA compliance reviews.",
 				inputSchema: {
 					dot_number: z.string().describe("USDOT number of the carrier (required)."),
 				},
 			},
 			async ({ dot_number }) => {
 				const env = this.env as Cloudflare.Env;
-
-				// The Edge Function needs an integer DOT — a string DOT was the
-				// bug we hit with carrier_score.
 				const dotInt = Number(dot_number);
 				if (!Number.isInteger(dotInt)) {
 					return errorResult(`DOT number must be numeric. Received: ${dot_number}`);
 				}
-
-				let supabaseUrl: string;
-				let teaApiKey: string;
+				let data: Record<string, unknown>;
 				try {
-					supabaseUrl = requireSecret(env.SUPABASE_URL, "SUPABASE_URL");
-					teaApiKey = requireSecret(env.TEA_API_KEY, "TEA_API_KEY");
+					data = await callGateway(env, RPC_NEW_ENTRANT_WORKUP, { p_dot: String(dotInt) });
 				} catch (e) {
 					return errorResult((e as Error).message);
 				}
-
-				const base = `${supabaseUrl.replace(/\/+$/, "")}${FUNCTIONS_BASE_PATH}/${FN_NEW_ENTRANT}`;
-				const authHeaders = {
-					Accept: "application/json",
-					Authorization: `Bearer ${teaApiKey}`,
-				};
-
-				// The request contract is not yet confirmed. Try POST (DOT +
-				// hasQuestionnaire flag in the body) first, then fall back to GET
-				// with the DOT in the path. The raw status + body are surfaced in
-				// a TEMPORARY DEBUG block below so we can confirm the real shape
-				// (remove once verified, as we did for carrier_score).
-				let usedMethod = "POST";
-				let status = "";
-				let raw = "";
-				try {
-					const postResp = await fetch(base, {
-						method: "POST",
-						headers: { ...authHeaders, "Content-Type": "application/json" },
-						body: JSON.stringify({ dot_number: dotInt, hasQuestionnaire: false }),
-					});
-					status = `${postResp.status} ${postResp.statusText}`;
-					raw = await postResp.text();
-					if (!postResp.ok) {
-						const getResp = await fetch(`${base}/${dotInt}`, {
-							method: "GET",
-							headers: authHeaders,
-						});
-						const getStatus = `${getResp.status} ${getResp.statusText}`;
-						const getRaw = await getResp.text();
-						if (getResp.ok) {
-							usedMethod = "GET";
-							status = getStatus;
-							raw = getRaw;
-						} else {
-							return textResult(
-								[
-									`TEA New-Entrant Fitness Workup — DOT ${dotInt}`,
-									"Could not retrieve the new-entrant report (both POST and GET failed).",
-									`DEBUG POST status: ${status}`,
-									`DEBUG POST body: ${raw.slice(0, 1500)}`,
-									`DEBUG GET status: ${getStatus}`,
-									`DEBUG GET body: ${getRaw.slice(0, 1500)}`,
-								].join("\n"),
-							);
-						}
-					}
-				} catch (e) {
-					return errorResult(
-						`Could not reach the TEA service (${FN_NEW_ENTRANT}): ${(e as Error).message}`,
-					);
+				const lines: string[] = [`TEA New-Entrant Fitness Workup — DOT ${dotInt}`, ""];
+				if (data.known === false) {
+					lines.push(fmt(data.note));
+					return textResult(lines.join("\n"));
 				}
-
-				let payload: Record<string, unknown> = {};
-				try {
-					let parsed: unknown = raw ? JSON.parse(raw) : null;
-					if (Array.isArray(parsed)) parsed = parsed[0];
-					if (parsed && typeof parsed === "object") {
-						payload = parsed as Record<string, unknown>;
-					}
-				} catch {
-					// Leave payload empty; the raw body is surfaced in DEBUG below.
-				}
-
-				// Locate the composite score and tier (best-guess keys, confirmed
-				// via the DEBUG block until the real shape is verified).
-				const COMPOSITE_KEYS = ["composite_score", "composite", "d_composite", "score"];
-				const TIER_KEYS = ["tier", "composite_tier", "risk_tier"];
-				const compositeKey = COMPOSITE_KEYS.find((k) => payload[k] !== undefined);
-				const tierKey = TIER_KEYS.find((k) => payload[k] !== undefined);
-				const composite = compositeKey ? payload[compositeKey] : undefined;
-				const tier = tierKey ? payload[tierKey] : undefined;
-				const compositeIsObject = composite !== null && typeof composite === "object";
-
-				const lines: string[] = [`TEA New-Entrant Fitness Workup — DOT ${dotInt}`];
-				if (compositeIsObject) {
-					lines.push("Composite Score (D1–D5):");
-					lines.push(...renderValue(composite, "  "));
-				} else {
-					lines.push(`Composite Score (D1–D5): ${fmt(composite)}`);
-				}
-				lines.push(`Tier: ${fmt(tier)}`, "");
-
-				// Narrative sections: render every other top-level section the
-				// report returns, whatever its shape.
-				const consumed = new Set<string>(
-					[compositeKey, tierKey].filter(Boolean) as string[],
-				);
-				for (const [key, value] of Object.entries(payload)) {
+				lines.push(`Review Level: ${fmt(data.review_level)}`);
+				const reasons = Array.isArray(data.review_reasons) ? (data.review_reasons as unknown[]) : [];
+				lines.push(reasons.length ? "Reasons:" : "Reasons: none");
+				for (const r of reasons) lines.push(`  - ${fmt(r)}`);
+				lines.push("");
+				const consumed = new Set(["dot", "known", "review_level", "review_reasons"]);
+				for (const [key, value] of Object.entries(data)) {
 					if (consumed.has(key)) continue;
 					lines.push(`${prettyKey(key)}:`);
 					lines.push(...renderValue(value, "  "));
 					lines.push("");
 				}
-
-				// TEMPORARY: confirm method + response shape, then remove.
-				lines.push(`DEBUG method: ${usedMethod}`);
-				lines.push(`DEBUG status: ${status}`);
-				lines.push(`DEBUG raw (first 1500 chars): ${raw.slice(0, 1500)}`);
-
 				return textResult(lines.join("\n"));
 			},
 		);
@@ -1762,7 +1674,16 @@ export class MyMCP extends McpAgent {
 
 				// Officers are discovered from the investigation bundle, then fed
 				// into officer_network (which requires a name, not a DOT).
-				const officerNames = invData ? extractOfficerNames(invData) : [];
+				let officerNames = invData ? extractOfficerNames(invData) : [];
+				// investigate_dot carries no officer fields; the census record (cached lookup) does.
+				if (officerNames.length === 0) {
+					try {
+						const cached = await callGateway(env, RPC_LOOKUP_CARRIER_CACHED, { p_dot: dotStr });
+						officerNames = extractOfficerNames(cached.census ?? cached);
+					} catch {
+						// keep going; the officer step reports that no name was found
+					}
+				}
 				const primaryOfficer = officerNames[0];
 
 				// 2. officer_network - keyed on the primary discovered officer.
@@ -1775,7 +1696,7 @@ export class MyMCP extends McpAgent {
 						key: "officer_network",
 						title: "Officer Network",
 						ok: false,
-						error: "No officer name was found in the investigation bundle to search on.",
+						error: "No officer name was found in the investigation bundle or the census record to search on.",
 					});
 				}
 
@@ -1849,7 +1770,7 @@ export class MyMCP extends McpAgent {
 
 				md.push("## Officers Discovered");
 				if (officerNames.length === 0) {
-					md.push("- None found in the investigation bundle.", "");
+					md.push("- None found in the investigation bundle or the census record.", "");
 				} else {
 					for (const o of officerNames) {
 						md.push(`- ${o}  _(normalized: ${normalizeOfficerName(o)})_`);
@@ -1930,7 +1851,7 @@ export class MyMCP extends McpAgent {
 					).length;
 					const pending = corpResults.some((r) => !r.outcome.available);
 					md.push(
-						`- Corporate enrichment: ${withMatches} of ${corpResults.length} top officer(s) matched${pending ? " (corporate_registry_search not yet deployed - enrichment pending)" : ""}.`,
+						`- Corporate enrichment: ${withMatches} of ${corpResults.length} top officer(s) matched${pending ? " (some registries are not wired yet; see the per-officer notes)" : ""}.`,
 					);
 				}
 				const activeFlags: string[] = [];
