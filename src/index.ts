@@ -1864,6 +1864,9 @@ export class MyMCP extends McpAgent {
 				md.push("");
 
 				// Full per-step detail, so nothing is hidden behind the summary.
+				// Capped per step: an officer search on a common name (e.g. BALJEET SINGH) returned ~19,000 lines and
+				// pushed the report past what an MCP client accepts. The summary above counts everything.
+				const DETAIL_LINES = 150;
 				md.push("## Detail");
 				for (const s of steps) {
 					md.push(`### ${s.title}`);
@@ -1871,7 +1874,11 @@ export class MyMCP extends McpAgent {
 						md.push(`_Step failed: ${s.error}_`, "");
 						continue;
 					}
-					md.push(...renderValue(s.data, ""));
+					const body = renderValue(s.data, "");
+					md.push(...body.slice(0, DETAIL_LINES));
+					if (body.length > DETAIL_LINES) {
+						md.push(`_… ${body.length - DETAIL_LINES} more lines not shown. Run ${s.key} on its own for the full result._`);
+					}
 					md.push("");
 				}
 
