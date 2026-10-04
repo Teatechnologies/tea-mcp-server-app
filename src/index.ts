@@ -544,37 +544,6 @@ function extractOfficerNames(value: unknown): string[] {
 	return out;
 }
 
-/** Return the first primitive value whose key matches, searched recursively. */
-function findFirstValue(value: unknown, keyRegex: RegExp): string | number | undefined {
-	let result: string | number | undefined;
-	const walk = (v: unknown): void => {
-		if (result !== undefined || v === null || typeof v !== "object") return;
-		if (Array.isArray(v)) {
-			for (const item of v) {
-				walk(item);
-				if (result !== undefined) return;
-			}
-			return;
-		}
-		for (const [k, val] of Object.entries(v as Record<string, unknown>)) {
-			if (
-				(typeof val === "string" || typeof val === "number") &&
-				val !== "" &&
-				keyRegex.test(k)
-			) {
-				result = val;
-				return;
-			}
-		}
-		for (const val of Object.values(v as Record<string, unknown>)) {
-			walk(val);
-			if (result !== undefined) return;
-		}
-	};
-	walk(value);
-	return result;
-}
-
 /** Sum the lengths of every array found under a key matching keyRegex. */
 function countArrayItems(value: unknown, keyRegex: RegExp): number {
 	let total = 0;
