@@ -251,6 +251,60 @@ function renderSignals(sig: Record<string, unknown>, indent: string): string[] {
  * Call a TEA Supabase Edge Function for a DOT number (Bearer API-key auth) and
  * return the parsed JSON object. Throws a friendly error on failure.
  */
+/**
+ * Live FMCSA QCMobile identity for a DOT: legal name, MC, authority and out-of-service status, read the same way
+ * lookup_carrier reads them. Returns null when QCMobile is unavailable or has no record (8-second timeout).
+ */
+async function fetchQcMobileIdentity(
+	env: Cloudflare.Env,
+	dot: string,
+): Promise<{ name: string; mc: string; authority: string; oos: string } | null> {
+	try {
+		const webKey = requireSecret(env.QCMOBILE_WEBKEY, "QCMOBILE_WEBKEY");
+		const resp = await fetch(QCMOBILE_CARRIER_URL(dot, webKey), {
+			headers: { Accept: "application/json" },
+			signal: AbortSignal.timeout(8000),
+		});
+		if (!resp.ok) return null;
+		const parsed = (await resp.json()) as Record<string, unknown> | null;
+		const content = parsed?.content;
+		const carrier = (Array.isArray(content)
+			? (content[0] as Record<string, unknown>)?.carrier
+			: (content as Record<string, unknown> | undefined)?.carrier ?? content) as Record<string, unknown> | undefined;
+		if (!carrier || Object.keys(carrier).length === 0) return null;
+		const allowed = carrier.allowedToOperate;
+		const oosDate = (carrier.oosDate as string) || (carrier.outOfServiceDate as string);
+		// the carrier record has no MC; QCMobile lists dockets on their own endpoint
+		let dockets: string[] = [];
+		try {
+			const dr = await fetch(
+				`https://mobile.fmcsa.dot.gov/qc/services/carriers/${encodeURIComponent(dot)}/docket-numbers?webKey=${encodeURIComponent(webKey)}`,
+				{ headers: { Accept: "application/json" }, signal: AbortSignal.timeout(8000) },
+			);
+			if (dr.ok) {
+				const list = ((await dr.json()) as { content?: unknown })?.content;
+				dockets = (Array.isArray(list) ? list : [])
+					.map((d) => {
+						const item = d as { prefix?: unknown; docketNumber?: unknown };
+						const num = String(item.docketNumber ?? "").replace(/\D/g, "");
+						return num ? `${String(item.prefix ?? "").toUpperCase()}${num}` : "";
+					})
+					.filter(Boolean);
+			}
+		} catch {
+			// leave dockets empty
+		}
+		return {
+			name: (carrier.legalName as string) || (carrier.dbaName as string) || "Unknown",
+			mc: dockets.join(", ") || (carrier.docketNumber as string) || "Not reported by FMCSA",
+			authority: allowed === "Y" ? "Authorized to operate" : allowed === "N" ? "NOT authorized to operate" : "Unknown",
+			oos: oosDate ? `OUT OF SERVICE (since ${oosDate})` : "Not out of service",
+		};
+	} catch {
+		return null;
+	}
+}
+
 async function fetchEdgeFunction(
 	env: Cloudflare.Env,
 	functionName: string,
@@ -488,37 +542,6 @@ function extractOfficerNames(value: unknown): string[] {
 		out.push(name);
 	}
 	return out;
-}
-
-/** Return the first primitive value whose key matches, searched recursively. */
-function findFirstValue(value: unknown, keyRegex: RegExp): string | number | undefined {
-	let result: string | number | undefined;
-	const walk = (v: unknown): void => {
-		if (result !== undefined || v === null || typeof v !== "object") return;
-		if (Array.isArray(v)) {
-			for (const item of v) {
-				walk(item);
-				if (result !== undefined) return;
-			}
-			return;
-		}
-		for (const [k, val] of Object.entries(v as Record<string, unknown>)) {
-			if (
-				(typeof val === "string" || typeof val === "number") &&
-				val !== "" &&
-				keyRegex.test(k)
-			) {
-				result = val;
-				return;
-			}
-		}
-		for (const val of Object.values(v as Record<string, unknown>)) {
-			walk(val);
-			if (result !== undefined) return;
-		}
-	};
-	walk(value);
-	return result;
 }
 
 /** Sum the lengths of every array found under a key matching keyRegex. */
@@ -1736,23 +1759,31 @@ export class MyMCP extends McpAgent {
 				md.push(`# Investigation Report - DOT ${dotStr}`, "");
 
 				// Carrier identity
+				// Identity, MC, authority and OOS come from live QCMobile only (never the cache). investigate_dot's
+				// top-level target_* fields describe this carrier; its connections describe other carriers.
+				const live = await fetchQcMobileIdentity(env, dotStr);
 				md.push("## Carrier Identity");
 				md.push(
-					`- Legal Name: ${fmt(findFirstValue(inv, /legal_name|carrier_name|entity_name|dba_name|company_name/i))}`,
+					`- Legal Name: ${fmt(live?.name ?? inv.target_name)}`,
 					`- DOT Number: ${dotStr}`,
-					`- MC Number: ${fmt(findFirstValue(inv, /docket|mc_number|mc_num/i))}`,
-					`- Status: ${fmt(findFirstValue(inv, /operating_status|authority_status|^status$/i))}`,
-					`- Principal Address: ${fmt(findFirstValue(inv, /address|principal_address|phy_/i))}`,
+					`- MC Number: ${live ? live.mc : "Live FMCSA check unavailable; run lookup_carrier"}`,
+					`- Authority Status (live FMCSA): ${live ? live.authority : "Unavailable; run lookup_carrier"}`,
+					`- Out-of-Service Status (live FMCSA): ${live ? live.oos : "Unavailable; run lookup_carrier"}`,
+					`- Principal Address: ${fmt(inv.target_address)}`,
 					"",
 				);
 
-				// TEA score
+				let teaScore = "N/A";
+				let riskTier = "N/A";
+				try {
+					const payload = await fetchEdgeFunction(env, FN_CARRIER_SCORE, dotStr);
+					teaScore = fmt(payload.tea_score);
+					riskTier = fmt(payload.risk_tier);
+				} catch (e) {
+					teaScore = `Unavailable (${(e as Error).message})`;
+				}
 				md.push("## TEA Score");
-				md.push(
-					`- TEA / Composite Score: ${fmt(findFirstValue(inv, /tea_score|composite_score|risk_score|chameleon_score/i))}`,
-					`- Risk Tier: ${fmt(findFirstValue(inv, /risk_tier|^tier$|composite_tier/i))}`,
-					"",
-				);
+				md.push(`- TEA Risk Score (lower = safer): ${teaScore}`, `- Risk Tier: ${riskTier}`, "");
 
 				// Network summary - per-step status + array counts.
 				md.push("## Network Summary");
