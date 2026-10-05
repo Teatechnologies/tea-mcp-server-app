@@ -61,6 +61,21 @@ const RPC_BOARD_LIST = "mcp_board_list";
 const RPC_BOARD_MEMBERS = "mcp_board_members";
 const RPC_BOARD_ADD_MEMBER = "mcp_board_add_member";
 const RPC_BOARD_MOVE_MEMBER = "mcp_board_move_member";
+// Asked before every non-board tool call: may this connection's key use the full tool set? (tea-mcp-rpc)
+const RPC_MCP_ACCESS = "mcp_access";
+
+// Pro and Enterprise only (Pricing 3, 2026-10-05). The Capacity Board tools stay open to any signed-in
+// TruckVerifi account; every other tool needs a key whose owner is on Pro or Enterprise.
+const BOARD_TOOLS = new Set(["capacity_boards", "capacity_board_cards", "capacity_board_add_carrier", "capacity_board_move_card"]);
+const SSO_URL = "https://tea-mcp-server-app.robertcr8.workers.dev/sso/mcp";
+const PLANS_URL = "https://www.theteaintel.com/pricing";
+const NO_KEY_MESSAGE =
+	"The TEA carrier tools come with the Pro and Enterprise plans. In claude.ai, add this connector with the address " +
+	`${SSO_URL} and sign in with your TEA account; in other MCP clients, send your key from https://www.theteaintel.com/api ` +
+	'as the header "Authorization: Bearer <your key>". Plans: ' + PLANS_URL;
+const BOARD_ONLY_MESSAGE =
+	"This TEA account is on the free plan, so this connection covers the Capacity Board tools only. The other TEA " +
+	`tools come with Pro and Enterprise (${PLANS_URL}). After upgrading, run the tool again; there is no need to reconnect.`;
 
 // FMCSA QCMobile live carrier endpoint (identity / authority / OOS status).
 // The DOT number and webKey are interpolated at call time.
@@ -92,10 +107,10 @@ declare global {
 }
 
 /**
- * Per-connection props set by the fetch handler. A caller may connect with their own TEA API
- * key (created at https://www.theteaintel.com/api) as `Authorization: Bearer <key>` or
- * `x-api-key`; the Capacity Board tools act as that key's owner. The other tools keep using
- * the Worker's TEA_API_KEY, so connecting without a key changes nothing for them.
+ * Per-connection props set by the fetch handler. The caller's own TEA key (from the /sso/mcp sign-in, or sent on
+ * /mcp as `Authorization: Bearer <key>` or `x-api-key`) decides access: the Capacity Board tools act as that
+ * key's owner, and every other tool needs the owner to be on Pro or Enterprise (accessDenied). Without a key only
+ * the explanation comes back.
  */
 interface McpProps extends Record<string, unknown> {
 	userApiKey?: string;
@@ -107,10 +122,44 @@ interface McpProps extends Record<string, unknown> {
 }
 
 const BOARD_KEY_REQUIRED =
-	"Capacity Board tools act as a TruckVerifi user, so this MCP connection needs your own TEA API key. " +
-	"Create one at https://www.theteaintel.com/api (Pro and Enterprise plans include it; pay-per-call is also available), " +
-	'then connect to this server with the header "Authorization: Bearer <your key>". ' +
-	'With mcp-remote: npx mcp-remote <server url>/mcp --header "Authorization: Bearer <your key>".';
+	"Capacity Board tools act as a TruckVerifi user, so this connection needs to know who you are. In claude.ai, add " +
+	`this connector with the address ${SSO_URL} and sign in with your TEA / TruckVerifi account. In other MCP clients, ` +
+	'send your key from https://www.theteaintel.com/api as the header "Authorization: Bearer <your key>".';
+
+/**
+ * May this key use the full tool set? Asks the gateway (one counted call, so the owner's daily limit covers MCP use).
+ * Returns null when it may, or the message to show instead.
+ */
+async function accessDenied(env: Cloudflare.Env, key: string | undefined, tool: string): Promise<string | null> {
+	if (!key) return NO_KEY_MESSAGE;
+	const supabaseUrl = requireSecret(env.SUPABASE_URL, "SUPABASE_URL");
+	let resp: Response;
+	try {
+		resp = await fetch(`${supabaseUrl.replace(/\/+$/, "")}${FUNCTIONS_BASE_PATH}/${FN_GATEWAY}`, {
+			method: "POST",
+			headers: { Accept: "application/json", "Content-Type": "application/json", Authorization: `Bearer ${key}` },
+			body: JSON.stringify({ rpc: RPC_MCP_ACCESS, params: { tool } }),
+		});
+	} catch (e) {
+		return `Could not reach the TEA gateway to check this connection's plan: ${(e as Error).message}`;
+	}
+	let body: Record<string, unknown> = {};
+	try {
+		body = (await resp.json()) as Record<string, unknown>;
+	} catch {
+		/* empty or non-JSON body */
+	}
+	if (resp.ok) {
+		const data = (body.data ?? {}) as Record<string, unknown>;
+		return data.full_tools === true ? null : BOARD_ONLY_MESSAGE;
+	}
+	if (resp.status === 401) {
+		return `This connection's TEA key was revoked or is not valid. Reconnect (${SSO_URL}) or create a new key at https://www.theteaintel.com/api.`;
+	}
+	if (resp.status === 402) return NO_KEY_MESSAGE;
+	if (resp.status === 403 && body.error === "BOARD_KEY_ONLY") return BOARD_ONLY_MESSAGE;
+	return String(body.message ?? body.error ?? `The TEA gateway answered ${resp.status}.`);
+}
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -909,6 +958,24 @@ export class MyMCP extends McpAgent {
 	});
 
 	async init() {
+		// Pro and Enterprise only: every tool except the Capacity Board ones first checks this connection's key
+		// (accessDenied). The tools keep calling TEA with the Worker's own key once the check passes.
+		const register = this.server.registerTool.bind(this.server) as (...args: unknown[]) => unknown;
+		(this.server as unknown as { registerTool: (...args: unknown[]) => unknown }).registerTool = (
+			name: unknown,
+			config: unknown,
+			handler: unknown,
+		) => {
+			if (typeof name === "string" && BOARD_TOOLS.has(name)) return register(name, config, handler);
+			const run = handler as (...a: unknown[]) => Promise<unknown>;
+			return register(name, config, async (...a: unknown[]) => {
+				const key = (this.props as McpProps | undefined)?.userApiKey?.trim() || undefined;
+				const denied = await accessDenied(this.env as Cloudflare.Env, key, String(name));
+				if (denied) return errorResult(denied);
+				return run(...a);
+			});
+		};
+
 		// -------------------------------------------------------------------
 		// Tool 1 — lookup_carrier
 		// Live FMCSA QCMobile identity/authority/OOS + TEA score & risk tier.
@@ -2278,8 +2345,8 @@ export class MyMCP extends McpAgent {
 }
 
 // Two ways in:
-//   /mcp      — open, as it always was. Tools use the Worker's TEA_API_KEY; a caller may add
-//               their own key as a header for the Capacity Board tools.
+//   /mcp      — with the caller's own key as a header (Pro or Enterprise for the carrier tools; any
+//               signed-in account's board key for the Capacity Board tools).
 //   /sso/mcp  — OAuth (dynamic client registration, so claude.ai and other MCP clients can
 //               connect). The user signs in with a Supabase email code; the grant carries
 //               their id, plan and a self-serve key (see sso.ts).
@@ -2301,9 +2368,9 @@ const openRoutes = {
 
 		if (url.pathname === "/") {
 			return new Response(
-				"TEA Highway Intelligence MCP server.\n\n" +
-					"  /mcp      open endpoint (Streamable HTTP)\n" +
-					"  /sso/mcp  OAuth endpoint: sign in with your TEA / TruckVerifi account for the Capacity Board tools\n",
+				"TEA Highway Intelligence MCP server (Pro and Enterprise plans: https://www.theteaintel.com/pricing).\n\n" +
+					"  /sso/mcp  sign in with your TEA / TruckVerifi account (claude.ai and other OAuth MCP clients)\n" +
+					"  /mcp      send your key from https://www.theteaintel.com/api as Authorization: Bearer <key>\n",
 				{ headers: { "Content-Type": "text/plain; charset=utf-8" } },
 			);
 		}

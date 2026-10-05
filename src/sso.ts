@@ -3,10 +3,10 @@
 // The Worker is its own OAuth authorization server (workers-oauth-provider, with dynamic
 // client registration so claude.ai can connect). The user proves who they are with a
 // Supabase email one-time code on their TEA / TruckVerifi account (same auth.users). On
-// success the grant carries the user's id, email, API plan and a board-only TEA API key
-// named "Claude MCP" (my_board_key_create: no API plan needed, limited to the board RPCs;
-// created once and remembered in OAUTH_KV), which the Capacity Board tools send to the
-// gateway so the RPCs run as that user.
+// success the grant carries the user's id, email, plan and a TEA board key named "Claude MCP"
+// (my_board_key_create; created once and remembered in OAUTH_KV). The gateway decides what the key
+// covers on every call: every TEA tool when its owner is on Pro or Enterprise, the Capacity Board
+// tools only otherwise (api_key_gate, dot-detective docs/sql/pricing-3-api-mcp.sql).
 import type { AuthRequest, OAuthHelpers } from "@cloudflare/workers-oauth-provider";
 
 export interface SsoEnv {
@@ -20,7 +20,7 @@ export interface SsoProps extends Record<string, unknown> {
 	viaSso: true;
 	userId: string;
 	email: string;
-	/** From my_api_overview: "included" | "metered" | "none" | "suspended" | "unknown". */
+	/** From my_api_overview: "included" (Enterprise) | "mcp" (Pro) | "none" | "suspended" | "unknown". */
 	apiPlan: string;
 	userApiKey?: string;
 }
@@ -110,6 +110,7 @@ function emailForm(clientName: string, req: AuthRequest, error?: string, email =
 		"Sign in",
 		`<h1>Sign in to TEA</h1>
 <p><strong>${esc(clientName)}</strong> wants to use your TEA / TruckVerifi account: your Capacity Boards and the carrier intelligence tools.</p>
+<p><small>The carrier intelligence tools come with the Pro and Enterprise plans. Capacity Boards work on any account.</small></p>
 <form method="post">
 <input type="hidden" name="step" value="email"><input type="hidden" name="req" value="${esc(enc(req))}">
 <label for="email">Account email</label>
