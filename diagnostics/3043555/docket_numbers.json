@@ -1,0 +1,20 @@
+{
+  "http": 200,
+  "fetched_at": "2026-10-08T09:43:38.517Z",
+  "body": {
+    "content": [
+      {
+        "docketNumber": 45980,
+        "docketNumberId": 895097,
+        "dotNumber": 3043555,
+        "prefix": "MC"
+      }
+    ],
+    "retrievalDate": "2026-10-08T09:43:38.252+0000",
+    "_links": {
+      "self": {
+        "href": "https://mobile.fmcsa.dot.gov/qc/services/carriers/3043555/mc-numbers"
+      }
+    }
+  }
+}

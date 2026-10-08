@@ -1,0 +1,91 @@
+{
+  "http": 200,
+  "fetched_at": "2026-10-08T09:43:38.718Z",
+  "body": {
+    "content": {
+      "_links": {
+        "basics": {
+          "href": "https://mobile.fmcsa.dot.gov/qc/services/carriers/53467/basics"
+        },
+        "cargo carried": {
+          "href": "https://mobile.fmcsa.dot.gov/qc/services/carriers/53467/cargo-carried"
+        },
+        "operation classification": {
+          "href": "https://mobile.fmcsa.dot.gov/qc/services/carriers/53467/operation-classification"
+        },
+        "docket numbers": {
+          "href": "https://mobile.fmcsa.dot.gov/qc/services/carriers/53467/docket-numbers"
+        },
+        "carrier active-For-hire authority": {
+          "href": "https://mobile.fmcsa.dot.gov/qc/services/carriers/53467/authority"
+        },
+        "self": {
+          "href": "https://mobile.fmcsa.dot.gov/qc/services/carriers/53467"
+        }
+      },
+      "carrier": {
+        "allowedToOperate": "Y",
+        "bipdInsuranceOnFile": "5000",
+        "bipdInsuranceRequired": "Y",
+        "bipdRequiredAmount": "1000",
+        "bondInsuranceOnFile": "75",
+        "bondInsuranceRequired": "Y",
+        "brokerAuthorityStatus": "A",
+        "cargoInsuranceOnFile": "0",
+        "cargoInsuranceRequired": "u",
+        "carrierOperation": {
+          "carrierOperationCode": "A",
+          "carrierOperationDesc": "Interstate"
+        },
+        "censusTypeId": {
+          "censusType": "C",
+          "censusTypeDesc": "CARRIER",
+          "censusTypeId": 1
+        },
+        "commonAuthorityStatus": "A",
+        "contractAuthorityStatus": "A",
+        "crashTotal": 677,
+        "dbaName": null,
+        "dotNumber": 53467,
+        "driverInsp": 11642,
+        "driverOosInsp": 113,
+        "driverOosRate": 0.9706236041917197,
+        "driverOosRateNationalAverage": "5.51",
+        "ein": 470648386,
+        "fatalCrash": 12,
+        "hazmatInsp": 338,
+        "hazmatOosInsp": 8,
+        "hazmatOosRate": 2.366863905325444,
+        "hazmatOosRateNationalAverage": "4.5",
+        "injCrash": 220,
+        "isPassengerCarrier": "N",
+        "issScore": null,
+        "legalName": "WERNER ENTERPRISES INC",
+        "mcs150Outdated": "N",
+        "oosDate": null,
+        "oosRateNationalAverageYear": "2009-2010",
+        "phyCity": "OMAHA",
+        "phyCountry": "US",
+        "phyState": "NE",
+        "phyStreet": "14507 FRONTIER ROAD",
+        "phyZipcode": "68138",
+        "reviewDate": "2024-11-15",
+        "reviewType": "N",
+        "safetyRating": "S",
+        "safetyRatingDate": "1995-08-08",
+        "safetyReviewDate": "2024-11-15",
+        "safetyReviewType": "N",
+        "snapshotDate": null,
+        "statusCode": "A",
+        "totalDrivers": 9107,
+        "totalPowerUnits": 9863,
+        "towawayCrash": 445,
+        "vehicleInsp": 6253,
+        "vehicleOosInsp": 1251,
+        "vehicleOosRate": 20.00639692947385,
+        "vehicleOosRateNationalAverage": "20.72"
+      }
+    },
+    "retrievalDate": "2026-10-08T09:43:38.637+0000"
+  }
+}

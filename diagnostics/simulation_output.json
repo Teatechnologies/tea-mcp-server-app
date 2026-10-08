@@ -1,0 +1,162 @@
+{
+ "53467": {
+  "name": "WERNER ENTERPRISES INC",
+  "old": {
+   "mc": "Not reported by FMCSA",
+   "authority": "Authorized to operate",
+   "oos": "Not out of service"
+  },
+  "proposed": {
+   "mc": "MC138328",
+   "usdot": "Active; allowed to operate (no out-of-service order)",
+   "authority": "ACTIVE: authorized for interstate for-hire carriage",
+   "motus": "common A, broker - (MC138328)",
+   "disagree": "",
+   "oos": "Not out of service"
+  }
+ },
+ "80806": {
+  "name": "J B HUNT TRANSPORT INC",
+  "old": {
+   "mc": "Not reported by FMCSA",
+   "authority": "Authorized to operate",
+   "oos": "Not out of service"
+  },
+  "proposed": {
+   "mc": "MC135797, FF51075",
+   "usdot": "Active; allowed to operate (no out-of-service order)",
+   "authority": "ACTIVE: authorized for interstate for-hire carriage",
+   "motus": "common -, broker A (FF51075, MC135797)",
+   "disagree": "",
+   "oos": "Not out of service"
+  }
+ },
+ "1947018": {
+  "name": "QUALITY FREIGHT LLC",
+  "old": {
+   "mc": "Not reported by FMCSA",
+   "authority": "Authorized to operate",
+   "oos": "Not out of service"
+  },
+  "proposed": {
+   "mc": "MC692744",
+   "usdot": "Active; allowed to operate (no out-of-service order)",
+   "authority": "ACTIVE: authorized for interstate for-hire carriage",
+   "motus": "no record",
+   "disagree": "",
+   "oos": "Not out of service"
+  }
+ },
+ "3043555": {
+  "name": "DIAMOND GROUP LOGISTICS CO",
+  "old": {
+   "mc": "Not reported by FMCSA",
+   "authority": "Authorized to operate",
+   "oos": "Not out of service"
+  },
+  "proposed": {
+   "mc": "MC45980",
+   "usdot": "Active; allowed to operate (no out-of-service order)",
+   "authority": "INACTIVE: revoked or not reinstated. Not authorized for interstate for-hire carriage",
+   "motus": "no record",
+   "disagree": "",
+   "oos": "Not out of service"
+  }
+ },
+ "3118945": {
+  "name": "PINEDA TRANSPORT LLC",
+  "old": {
+   "mc": "Not reported by FMCSA",
+   "authority": "Authorized to operate",
+   "oos": "Not out of service"
+  },
+  "proposed": {
+   "mc": "MC134362",
+   "usdot": "Active; allowed to operate (no out-of-service order)",
+   "authority": "INACTIVE: revoked or not reinstated. Not authorized for interstate for-hire carriage",
+   "motus": "no record",
+   "disagree": "",
+   "oos": "Not out of service"
+  }
+ },
+ "3911275": {
+  "name": "BLUE RAZOR LOGISTICS LLC",
+  "old": {
+   "mc": "Not reported by FMCSA",
+   "authority": "Authorized to operate",
+   "oos": "Not out of service"
+  },
+  "proposed": {
+   "mc": "MC1443893",
+   "usdot": "Active; allowed to operate (no out-of-service order)",
+   "authority": "INACTIVE: revoked or not reinstated. Not authorized for interstate for-hire carriage",
+   "motus": "no record",
+   "disagree": "",
+   "oos": "Not out of service"
+  }
+ },
+ "4167210": {
+  "name": "PBX TRUCKING LLC",
+  "old": {
+   "mc": "Not reported by FMCSA",
+   "authority": "Authorized to operate",
+   "oos": "Not out of service"
+  },
+  "proposed": {
+   "mc": "MC1602190",
+   "usdot": "Active; allowed to operate (no out-of-service order)",
+   "authority": "INACTIVE: revoked or not reinstated. Not authorized for interstate for-hire carriage",
+   "motus": "common I, broker - (MC1602190)",
+   "disagree": "",
+   "oos": "Not out of service"
+  }
+ },
+ "4572169": {
+  "name": "MN TRUCKING LLC",
+  "old": {
+   "mc": "Not reported by FMCSA",
+   "authority": "NOT authorized to operate",
+   "oos": "OUT OF SERVICE (since 2026-10-05)"
+  },
+  "proposed": {
+   "mc": "MC1818815",
+   "usdot": "Active; NOT allowed to operate (federal out-of-service order)",
+   "authority": "Active on paper, but may not operate (see USDOT)",
+   "motus": "no record",
+   "disagree": "",
+   "oos": "OUT OF SERVICE (since 2026-10-05)"
+  }
+ },
+ "4572941": {
+  "name": "GREEN VALLEY TRUCKING",
+  "old": {
+   "mc": "Not reported by FMCSA",
+   "authority": "NOT authorized to operate",
+   "oos": "OUT OF SERVICE (since 2026-10-05)"
+  },
+  "proposed": {
+   "mc": "MC1819232",
+   "usdot": "Active; NOT allowed to operate (federal out-of-service order)",
+   "authority": "Active on paper, but may not operate (see USDOT)",
+   "motus": "no record",
+   "disagree": "",
+   "oos": "OUT OF SERVICE (since 2026-10-05)"
+  }
+ },
+ "7320887": {
+  "name": "ORANGE CREEK LLC",
+  "old": {
+   "mc": "Not reported by FMCSA",
+   "authority": "Authorized to operate",
+   "oos": "Not out of service"
+  },
+  "proposed": {
+   "mc": "Not reported by FMCSA",
+   "usdot": "Active; allowed to operate (no out-of-service order)",
+   "authority": "Unknown: no authority record from FMCSA",
+   "motus": "common A, broker - (MC49822294)",
+   "disagree": "QCMobile none; Motus active",
+   "oos": "Not out of service"
+  }
+ }
+}

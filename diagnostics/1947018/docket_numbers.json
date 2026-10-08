@@ -1,0 +1,20 @@
+{
+  "http": 200,
+  "fetched_at": "2026-10-08T09:43:38.898Z",
+  "body": {
+    "content": [
+      {
+        "docketNumber": 692744,
+        "docketNumberId": 501750,
+        "dotNumber": 1947018,
+        "prefix": "MC"
+      }
+    ],
+    "retrievalDate": "2026-10-08T09:43:38.886+0000",
+    "_links": {
+      "self": {
+        "href": "https://mobile.fmcsa.dot.gov/qc/services/carriers/1947018/mc-numbers"
+      }
+    }
+  }
+}

@@ -1,0 +1,13 @@
+{
+  "_note": "Output of the proposed mcp_motus_authority RPC logic, run read-only on 2026-10-08 against motus.operating_authority (hub cgdzbcsvbmbrdzgsjitw).",
+  "1947018": { "common": null, "contract": null, "broker": null, "dockets": [] },
+  "3043555": { "common": null, "contract": null, "broker": null, "dockets": [] },
+  "3118945": { "common": null, "contract": null, "broker": null, "dockets": [] },
+  "3911275": { "common": null, "contract": null, "broker": null, "dockets": [] },
+  "4167210": { "common": "I", "contract": null, "broker": null, "dockets": ["MC1602190"] },
+  "4572169": { "common": null, "contract": null, "broker": null, "dockets": [] },
+  "4572941": { "common": null, "contract": null, "broker": null, "dockets": [] },
+  "53467": { "common": "A", "contract": null, "broker": null, "dockets": ["MC138328"] },
+  "7320887": { "common": "A", "contract": null, "broker": null, "dockets": ["MC49822294"] },
+  "80806": { "common": null, "contract": null, "broker": "A", "dockets": ["FF51075", "MC135797"] }
+}

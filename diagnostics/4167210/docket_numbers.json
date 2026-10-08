@@ -1,0 +1,20 @@
+{
+  "http": 200,
+  "fetched_at": "2026-10-08T09:43:39.650Z",
+  "body": {
+    "content": [
+      {
+        "docketNumber": 1602190,
+        "docketNumberId": 1638808,
+        "dotNumber": 4167210,
+        "prefix": "MC"
+      }
+    ],
+    "retrievalDate": "2026-10-08T09:43:39.643+0000",
+    "_links": {
+      "self": {
+        "href": "https://mobile.fmcsa.dot.gov/qc/services/carriers/4167210/mc-numbers"
+      }
+    }
+  }
+}

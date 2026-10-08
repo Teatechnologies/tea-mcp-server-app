@@ -1,0 +1,91 @@
+{
+  "http": 200,
+  "fetched_at": "2026-10-08T09:43:38.566Z",
+  "body": {
+    "content": {
+      "_links": {
+        "basics": {
+          "href": "https://mobile.fmcsa.dot.gov/qc/services/carriers/80806/basics"
+        },
+        "cargo carried": {
+          "href": "https://mobile.fmcsa.dot.gov/qc/services/carriers/80806/cargo-carried"
+        },
+        "operation classification": {
+          "href": "https://mobile.fmcsa.dot.gov/qc/services/carriers/80806/operation-classification"
+        },
+        "docket numbers": {
+          "href": "https://mobile.fmcsa.dot.gov/qc/services/carriers/80806/docket-numbers"
+        },
+        "carrier active-For-hire authority": {
+          "href": "https://mobile.fmcsa.dot.gov/qc/services/carriers/80806/authority"
+        },
+        "self": {
+          "href": "https://mobile.fmcsa.dot.gov/qc/services/carriers/80806"
+        }
+      },
+      "carrier": {
+        "allowedToOperate": "Y",
+        "bipdInsuranceOnFile": "3500",
+        "bipdInsuranceRequired": "Y",
+        "bipdRequiredAmount": "1000",
+        "bondInsuranceOnFile": "75",
+        "bondInsuranceRequired": "Y",
+        "brokerAuthorityStatus": "A",
+        "cargoInsuranceOnFile": "5",
+        "cargoInsuranceRequired": "u",
+        "carrierOperation": {
+          "carrierOperationCode": "A",
+          "carrierOperationDesc": "Interstate"
+        },
+        "censusTypeId": {
+          "censusType": "C",
+          "censusTypeDesc": "CARRIER",
+          "censusTypeId": 1
+        },
+        "commonAuthorityStatus": "A",
+        "contractAuthorityStatus": "A",
+        "crashTotal": 1472,
+        "dbaName": "J B HUNT",
+        "dotNumber": 80806,
+        "driverInsp": 20229,
+        "driverOosInsp": 147,
+        "driverOosRate": 0.7266795195017055,
+        "driverOosRateNationalAverage": "5.51",
+        "ein": 581081267,
+        "fatalCrash": 44,
+        "hazmatInsp": 672,
+        "hazmatOosInsp": 7,
+        "hazmatOosRate": 1.0416666666666667,
+        "hazmatOosRateNationalAverage": "4.5",
+        "injCrash": 494,
+        "isPassengerCarrier": "N",
+        "issScore": null,
+        "legalName": "J B HUNT TRANSPORT INC",
+        "mcs150Outdated": "N",
+        "oosDate": null,
+        "oosRateNationalAverageYear": "2009-2010",
+        "phyCity": "LOWELL",
+        "phyCountry": "US",
+        "phyState": "AR",
+        "phyStreet": "615 J B HUNT CORPORATE DRIVE",
+        "phyZipcode": "72745",
+        "reviewDate": "2023-01-12",
+        "reviewType": "N",
+        "safetyRating": "S",
+        "safetyRatingDate": "1992-05-08",
+        "safetyReviewDate": "2023-01-12",
+        "safetyReviewType": "N",
+        "snapshotDate": null,
+        "statusCode": "A",
+        "totalDrivers": 24116,
+        "totalPowerUnits": 25280,
+        "towawayCrash": 934,
+        "vehicleInsp": 11118,
+        "vehicleOosInsp": 2469,
+        "vehicleOosRate": 22.207231516459796,
+        "vehicleOosRateNationalAverage": "20.72"
+      }
+    },
+    "retrievalDate": "2026-10-08T09:43:38.550+0000"
+  }
+}

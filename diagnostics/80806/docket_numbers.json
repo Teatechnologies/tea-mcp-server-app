@@ -1,0 +1,26 @@
+{
+  "http": 200,
+  "fetched_at": "2026-10-08T09:43:38.605Z",
+  "body": {
+    "content": [
+      {
+        "docketNumber": 135797,
+        "docketNumberId": 194063,
+        "dotNumber": 80806,
+        "prefix": "MC"
+      },
+      {
+        "docketNumber": 51075,
+        "docketNumberId": 1329356,
+        "dotNumber": 80806,
+        "prefix": "FF"
+      }
+    ],
+    "retrievalDate": "2026-10-08T09:43:38.594+0000",
+    "_links": {
+      "self": {
+        "href": "https://mobile.fmcsa.dot.gov/qc/services/carriers/80806/mc-numbers"
+      }
+    }
+  }
+}
