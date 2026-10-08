@@ -1,0 +1,30 @@
+{
+  "http": 200,
+  "fetched_at": "2026-10-08T09:43:38.738Z",
+  "body": {
+    "content": [
+      {
+        "carrierAuthority": {
+          "applicantID": 8960,
+          "authority": "N",
+          "authorizedForBroker": "Y",
+          "authorizedForHouseholdGoods": "N",
+          "authorizedForPassenger": "N",
+          "authorizedForProperty": "Y",
+          "brokerAuthorityStatus": "A",
+          "commonAuthorityStatus": "A",
+          "contractAuthorityStatus": "A",
+          "docketNumber": 138328,
+          "dotNumber": 53467,
+          "prefix": "MC"
+        },
+        "_links": {
+          "self": {
+            "href": "https://mobile.fmcsa.dot.gov/qc/services/carriers/53467/authority/8960"
+          }
+        }
+      }
+    ],
+    "retrievalDate": "2026-10-08T09:43:38.729+0000"
+  }
+}

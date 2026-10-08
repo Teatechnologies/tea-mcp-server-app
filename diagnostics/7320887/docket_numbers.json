@@ -1,0 +1,13 @@
+{
+  "http": 200,
+  "fetched_at": "2026-10-08T09:44:09.773Z",
+  "body": {
+    "content": [],
+    "retrievalDate": "2026-10-08T09:44:09.770+0000",
+    "_links": {
+      "self": {
+        "href": "https://mobile.fmcsa.dot.gov/qc/services/carriers/7320887/mc-numbers"
+      }
+    }
+  }
+}

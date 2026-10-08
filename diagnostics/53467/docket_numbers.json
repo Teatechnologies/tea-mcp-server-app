@@ -1,0 +1,20 @@
+{
+  "http": 200,
+  "fetched_at": "2026-10-08T09:43:38.753Z",
+  "body": {
+    "content": [
+      {
+        "docketNumber": 138328,
+        "docketNumberId": 42329,
+        "dotNumber": 53467,
+        "prefix": "MC"
+      }
+    ],
+    "retrievalDate": "2026-10-08T09:43:38.747+0000",
+    "_links": {
+      "self": {
+        "href": "https://mobile.fmcsa.dot.gov/qc/services/carriers/53467/mc-numbers"
+      }
+    }
+  }
+}

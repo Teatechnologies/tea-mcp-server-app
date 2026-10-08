@@ -1,0 +1,404 @@
+diff --git a/src/index.ts b/src/index.ts
+index ef1e2af..76793ef 100644
+--- a/src/index.ts
++++ b/src/index.ts
+@@ -38,8 +38,10 @@ const RPC_NETWORK_SEARCH = "network_builder_search";
+ const RPC_CARRIERS_BY_PHONE = "get_carriers_by_phone";
+ const RPC_INVESTIGATE_DOT = "investigate_dot";
+ // TEA census-cache fallback for lookup_carrier when live QCMobile is unavailable.
+ const RPC_LOOKUP_CARRIER_CACHED = "mcp_lookup_carrier_cached";
++// The hub's mirror of FMCSA's Motus authority registry (authorities granted or changed since 2026-05-14).
++const RPC_MOTUS_AUTHORITY = "mcp_motus_authority";
+ const RPC_INSURANCE_COVERAGE_CHECK = "mcp_insurance_coverage_check";
+ const RPC_CORRIDOR_HOT_SPOTS = "mcp_corridor_hot_spots";
+ const RPC_SANCTIONS_SCREEN = "mcp_sanctions_screen";
+ const RPC_RECENT_ALERTS = "mcp_recent_alerts";
+@@ -299,60 +301,220 @@ function renderSignals(sig: Record<string, unknown>, indent: string): string[] {
+ /**
+  * Call a TEA Supabase Edge Function for a DOT number (Bearer API-key auth) and
+  * return the parsed JSON object. Throws a friendly error on failure.
+  */
+-/**
+- * Live FMCSA QCMobile identity for a DOT: legal name, MC, authority and out-of-service status, read the same way
+- * lookup_carrier reads them. Returns null when QCMobile is unavailable or has no record (8-second timeout).
+- */
++// ---------------------------------------------------------------------------
++// Live FMCSA status, read the same way by every tool (lookup_carrier, generate_investigation_report).
++//
++// QCMobile's carrier record carries three separate things that the old code collapsed into one:
++//   * allowedToOperate / oosDate  -> out-of-service orders ONLY ("Y" = no OOS order)
++//   * statusCode                  -> USDOT registration (A active, I inactive)
++//   * common/contract/brokerAuthorityStatus -> operating authority (A active, I inactive, N never granted)
++// A carrier whose authority was revoked for insurance with no OOS order reads allowedToOperate = "Y";
++// the old code printed "Authorized to operate" for it (DOT 3043555, ~105k carriers on the hub).
++//
++// QCMobile alone decides the verdict (platform rule). FMCSA's Motus registry, mirrored on the hub
++// (motus.operating_authority via the gateway RPC mcp_motus_authority), is shown on its OWN line and never
++// changes the verdict: since the 2026-05-14 migration it conflicts heavily with the legacy SAFER/MCMIS/
++// QCMobile data (it showed Werner, ~40k trucks, as revoked in June when it was not). It can also hold
++// post-migration grants that QCMobile doesn't show yet (DOT 7320887, MC49822294 granted 2026-09-24).
++// A disagreement between the two is stated in plain words, never resolved silently.
++// ---------------------------------------------------------------------------
++
++type AuthCode = "A" | "I" | "N" | null;
++type AuthorityVerdict = {
++	authorized: boolean | null; // true = may haul for hire, false = may not, null = cannot tell
++	label: string;
++	detail: string;
++	disagreement: string | null;
++};
++type LiveFmcsa =
++	| { kind: "unavailable" }
++	| { kind: "not_found" }
++	| {
++			kind: "ok";
++			name: string;
++			dot: string;
++			mc: string | null;
++			usdot: string;
++			motus: string;
++			oos: string;
++			oosActive: boolean;
++			authority: AuthorityVerdict;
++	  };
++
++const AUTH_CODE = (v: unknown): AuthCode => {
++	const s = String(v ?? "").trim().toUpperCase();
++	return s === "A" || s === "I" || s === "N" ? s : null;
++};
++// Motor carrier (for-hire hauling) authority from one source. Broker rows alone never decide it: the hub's
++// Motus mirror is incomplete for legacy carriers (J.B. Hunt 80806 has only its HHG-broker row there), so a
++// source with no common or contract status has no opinion on carrier authority.
++function carrierAuthorityFrom(codes: { common: AuthCode; contract: AuthCode; broker: AuthCode }): "A" | "I" | "N" | null {
++	const { common, contract } = codes;
++	if (common === null && contract === null) return null;
++	if (common === "A" || contract === "A") return "A";
++	if (common === "I" || contract === "I") return "I";
++	return "N";
++}
++
++async function qcmobileJson(url: string): Promise<{ ok: boolean; body: unknown }> {
++	const r = await fetch(url, { headers: { Accept: "application/json" }, signal: AbortSignal.timeout(8000) });
++	if (!r.ok) return { ok: false, body: null };
++	return { ok: true, body: await r.json().catch(() => null) };
++}
++
++async function readLiveFmcsa(env: Cloudflare.Env, dot: string): Promise<LiveFmcsa> {
++	let webKey: string;
++	try {
++		webKey = requireSecret(env.QCMOBILE_WEBKEY, "QCMOBILE_WEBKEY");
++	} catch {
++		return { kind: "unavailable" };
++	}
++	const base = `https://mobile.fmcsa.dot.gov/qc/services/carriers/${encodeURIComponent(dot)}`;
++	const key = `webKey=${encodeURIComponent(webKey)}`;
++
++	let carrierRes: { ok: boolean; body: unknown };
++	let docketRes: { ok: boolean; body: unknown } = { ok: false, body: null };
++	let motus: Record<string, unknown> | null = null;
++	try {
++		// The carrier record, its dockets, and the hub's Motus mirror, in parallel. Dockets and Motus are
++		// optional: a failure there never hides the carrier record.
++		const [c, d, m] = await Promise.allSettled([
++			qcmobileJson(QCMOBILE_CARRIER_URL(dot, webKey)),
++			qcmobileJson(`${base}/docket-numbers?${key}`),
++			callGateway(env, RPC_MOTUS_AUTHORITY, { p_dot: dot }),
++		]);
++		if (c.status !== "fulfilled" || !c.value.ok) return { kind: "unavailable" };
++		carrierRes = c.value;
++		if (d.status === "fulfilled") docketRes = d.value;
++		if (m.status === "fulfilled") motus = m.value;
++	} catch {
++		return { kind: "unavailable" };
++	}
++
++	const content = (carrierRes.body as Record<string, unknown> | null)?.content;
++	const carrier = (Array.isArray(content)
++		? (content[0] as Record<string, unknown>)?.carrier
++		: (content as Record<string, unknown> | undefined)?.carrier ?? content) as Record<string, unknown> | undefined;
++	if (!carrier || Object.keys(carrier).length === 0) return { kind: "not_found" };
++
++	// Dockets: /docket-numbers lists every MC/MX/FF number, including inactive ones (the base record has none).
++	const list = (docketRes.body as { content?: unknown } | null)?.content;
++	const dockets = (Array.isArray(list) ? list : [])
++		.map((x) => {
++			const item = x as { prefix?: unknown; docketNumber?: unknown };
++			const num = String(item.docketNumber ?? "").replace(/\D/g, "");
++			return num ? `${String(item.prefix ?? "MC").toUpperCase()}${num}` : "";
++		})
++		.filter(Boolean);
++
++	// Out-of-service and USDOT status.
++	const oosDate = (carrier.oosDate as string) || (carrier.outOfServiceDate as string) || "";
++	const oosActive = String(carrier.allowedToOperate ?? "").toUpperCase() === "N" || oosDate !== "";
++	const usdotCode = String(carrier.statusCode ?? "").toUpperCase();
++	// The USDOT line answers "may this company operate a commercial vehicle at all?" (registration active,
++	// no out-of-service order). It says nothing about for-hire MC authority: a carrier keeps an active USDOT
++	// number after its authority is revoked and may still run as a private, exempt or intrastate carrier.
++	const usdot = oosActive
++		? `${usdotCode === "I" ? "Inactive" : "Active"}; NOT allowed to operate (federal out-of-service order)`
++		: usdotCode === "A"
++			? "Active; allowed to operate (no out-of-service order)"
++			: usdotCode === "I"
++				? "Inactive; not allowed to operate"
++				: `${usdotCode || "Unknown"}`;
++
++	// Operating authority, per source.
++	const qc = {
++		common: AUTH_CODE(carrier.commonAuthorityStatus),
++		contract: AUTH_CODE(carrier.contractAuthorityStatus),
++		broker: AUTH_CODE(carrier.brokerAuthorityStatus),
++	};
++	const qcCarrier = carrierAuthorityFrom(qc);
++	const mo = motus
++		? { common: AUTH_CODE(motus.common), contract: AUTH_CODE(motus.contract), broker: AUTH_CODE(motus.broker) }
++		: null;
++	const moCarrier = mo ? carrierAuthorityFrom(mo) : null;
++
++	// The verdict comes from QCMobile only. Motus is reported beside it, never merged into it.
++	const worst = qcCarrier;
++	const word = (c: "A" | "I" | "N") => (c === "A" ? "active" : c === "I" ? "inactive" : "none granted");
++	const disagreement =
++		qcCarrier !== null && moCarrier !== null && qcCarrier !== moCarrier
++			? `FMCSA QCMobile says ${word(qcCarrier)}, the Motus registry says ${word(moCarrier)}. Motus records often conflict with the legacy systems since the migration, so the status above follows QCMobile; verify on SAFER before relying on either.`
++			: qcCarrier === null && moCarrier !== null
++				? `QCMobile has no authority record; the Motus registry says ${word(moCarrier)} (possibly a post-migration record the legacy systems don't show yet). Not used for the status above.`
++				: null;
++	const brokerOnly = qc.broker === "A" && worst !== "A";
++	const fmtCodes = (c: { common: AuthCode; contract: AuthCode; broker: AuthCode }) =>
++		`common ${c.common ?? "-"}, contract ${c.contract ?? "-"}, broker ${c.broker ?? "-"}`;
++	const detail = `QCMobile: ${qcCarrier ? fmtCodes(qc) : "no authority record"}`;
++	const motusLine = !mo
++		? "Not checked"
++		: moCarrier || mo.broker
++			? `${fmtCodes(mo)}${Array.isArray(motus?.dockets) && (motus?.dockets as string[]).length ? ` (${(motus?.dockets as string[]).join(", ")})` : ""}`
++			: "No record";
++
++	// For-hire (MC) operating authority only; the USDOT line above covers registration and OOS orders.
++	// `authorized` here means "may haul regulated freight for hire across state lines".
++	let authority: AuthorityVerdict;
++	if (worst === "I") {
++		authority = {
++			authorized: false,
++			label: "INACTIVE: revoked or not reinstated. Not authorized for interstate for-hire carriage (the USDOT number may still be active)",
++			detail,
++			disagreement,
++		};
++	} else if (worst === "N" && brokerOnly) {
++		authority = { authorized: false, label: "Broker authority only: no motor carrier authority to haul for hire", detail, disagreement };
++	} else if (worst === "N") {
++		// Normal for private, exempt and intrastate carriers, so not a red flag by itself.
++		authority = { authorized: false, label: "None on file (normal for private, exempt or intrastate carriers)", detail, disagreement };
++	} else if (worst === "A") {
++		authority = {
++			authorized: !oosActive && usdotCode !== "I",
++			label:
++				oosActive || usdotCode === "I"
++					? "Active on paper, but the carrier may not operate (see USDOT status)"
++					: "ACTIVE: authorized for interstate for-hire carriage",
++			detail,
++			disagreement,
++		};
++	} else {
++		authority = {
++			authorized: null,
++			label: "Unknown: FMCSA returned no operating authority record for this DOT",
++			detail,
++			disagreement,
++		};
++	}
++
++	return {
++		kind: "ok",
++		name: (carrier.legalName as string) || (carrier.dbaName as string) || "Unknown",
++		dot: String((carrier.dotNumber as string | number) ?? dot),
++		mc: dockets.length ? dockets.join(", ") : null,
++		usdot,
++		motus: motusLine,
++		oos: oosDate ? `OUT OF SERVICE (since ${oosDate})` : oosActive ? "OUT OF SERVICE" : "Not out of service",
++		oosActive,
++		authority,
++	};
++}
++
++/** Back-compat shape for generate_investigation_report. */
+ async function fetchQcMobileIdentity(
+ 	env: Cloudflare.Env,
+ 	dot: string,
+ ): Promise<{ name: string; mc: string; authority: string; oos: string } | null> {
+-	try {
+-		const webKey = requireSecret(env.QCMOBILE_WEBKEY, "QCMOBILE_WEBKEY");
+-		const resp = await fetch(QCMOBILE_CARRIER_URL(dot, webKey), {
+-			headers: { Accept: "application/json" },
+-			signal: AbortSignal.timeout(8000),
+-		});
+-		if (!resp.ok) return null;
+-		const parsed = (await resp.json()) as Record<string, unknown> | null;
+-		const content = parsed?.content;
+-		const carrier = (Array.isArray(content)
+-			? (content[0] as Record<string, unknown>)?.carrier
+-			: (content as Record<string, unknown> | undefined)?.carrier ?? content) as Record<string, unknown> | undefined;
+-		if (!carrier || Object.keys(carrier).length === 0) return null;
+-		const allowed = carrier.allowedToOperate;
+-		const oosDate = (carrier.oosDate as string) || (carrier.outOfServiceDate as string);
+-		// the carrier record has no MC; QCMobile lists dockets on their own endpoint
+-		let dockets: string[] = [];
+-		try {
+-			const dr = await fetch(
+-				`https://mobile.fmcsa.dot.gov/qc/services/carriers/${encodeURIComponent(dot)}/docket-numbers?webKey=${encodeURIComponent(webKey)}`,
+-				{ headers: { Accept: "application/json" }, signal: AbortSignal.timeout(8000) },
+-			);
+-			if (dr.ok) {
+-				const list = ((await dr.json()) as { content?: unknown })?.content;
+-				dockets = (Array.isArray(list) ? list : [])
+-					.map((d) => {
+-						const item = d as { prefix?: unknown; docketNumber?: unknown };
+-						const num = String(item.docketNumber ?? "").replace(/\D/g, "");
+-						return num ? `${String(item.prefix ?? "").toUpperCase()}${num}` : "";
+-					})
+-					.filter(Boolean);
+-			}
+-		} catch {
+-			// leave dockets empty
+-		}
+-		return {
+-			name: (carrier.legalName as string) || (carrier.dbaName as string) || "Unknown",
+-			mc: dockets.join(", ") || (carrier.docketNumber as string) || "Not reported by FMCSA",
+-			authority: allowed === "Y" ? "Authorized to operate" : allowed === "N" ? "NOT authorized to operate" : "Unknown",
+-			oos: oosDate ? `OUT OF SERVICE (since ${oosDate})` : "Not out of service",
+-		};
+-	} catch {
+-		return null;
+-	}
++	const live = await readLiveFmcsa(env, dot);
++	if (live.kind !== "ok") return null;
++	return {
++		name: live.name,
++		mc: live.mc ?? "Not reported by FMCSA",
++		authority: `USDOT: ${live.usdot}. For-hire authority (MC): ${live.authority.label}` + (live.authority.disagreement ? ` (${live.authority.disagreement})` : ""),
++		oos: live.oos,
++	};
+ }
+ 
+ async function fetchEdgeFunction(
+ 	env: Cloudflare.Env,
+@@ -1017,72 +1179,15 @@ export class MyMCP extends McpAgent {
+ 					lines.push(...renderValue(data, ""));
+ 					return textResult(lines.join("\n"));
+ 				};
+ 
+-				// --- Live FMCSA QCMobile lookup (never from Supabase) ---
+-				let webKey: string;
+-				try {
+-					webKey = requireSecret(env.QCMOBILE_WEBKEY, "QCMOBILE_WEBKEY");
+-				} catch (e) {
+-					return errorResult((e as Error).message);
+-				}
+-
+-				let carrier: Record<string, unknown> = {};
+-				try {
+-					// 8-second timeout: a slow QCMobile falls back to the cache.
+-					const resp = await fetch(QCMOBILE_CARRIER_URL(dot_number, webKey), {
+-						headers: { Accept: "application/json" },
+-						signal: AbortSignal.timeout(8000),
+-					});
+-					const raw = await resp.text();
+-					if (!resp.ok) {
+-						return await serveFromCache();
+-					}
+-					let parsed: unknown;
+-					try {
+-						parsed = raw ? JSON.parse(raw) : null;
+-					} catch {
+-						return errorResult(
+-							"FMCSA QCMobile returned a response that was not valid JSON.",
+-						);
+-					}
+-					// QCMobile shape: { content: { carrier: {...} } | [{ carrier: {...} }] }
+-					const content = (parsed as Record<string, unknown> | null)?.content;
+-					if (Array.isArray(content)) {
+-						carrier =
+-							((content[0] as Record<string, unknown>)?.carrier as Record<
+-								string,
+-								unknown
+-							>) ?? {};
+-					} else if (content && typeof content === "object") {
+-						const c = (content as Record<string, unknown>).carrier;
+-						carrier =
+-							(c as Record<string, unknown>) ?? (content as Record<string, unknown>);
+-					}
+-					if (!carrier || Object.keys(carrier).length === 0) {
+-						return errorResult(`No FMCSA carrier record found for DOT ${dot_number}.`);
+-					}
+-				} catch {
+-					// Timeout or network/fetch error — serve identity from the cache.
+-					return await serveFromCache();
+-				}
+-
+-				// --- Extract readable fields defensively ---
+-				const name =
+-					(carrier.legalName as string) || (carrier.dbaName as string) || "Unknown";
+-				const dot = (carrier.dotNumber as string | number) ?? dot_number;
+-				const mc = (carrier.docketNumber as string) || mc_number || "Not reported by FMCSA";
+-				const allowed = carrier.allowedToOperate;
+-				const authority =
+-					allowed === "Y"
+-						? "Authorized to operate"
+-						: allowed === "N"
+-							? "NOT authorized to operate"
+-							: "Unknown";
+-				const oosDate = (carrier.oosDate as string) || (carrier.outOfServiceDate as string);
+-				const oosStatus = oosDate
+-					? `OUT OF SERVICE (since ${oosDate})`
+-					: "Not out of service";
++				// --- Live FMCSA status (QCMobile + the hub's Motus mirror; never the census tables) ---
++				const live = await readLiveFmcsa(env, dot_number);
++				if (live.kind === "unavailable") return await serveFromCache();
++				if (live.kind === "not_found") return errorResult(`No FMCSA carrier record found for DOT ${dot_number}.`);
++				const name = live.name;
++				const dot = live.dot;
++				const mc = live.mc ?? (mc_number ? `${mc_number} (as supplied; FMCSA lists no docket)` : "Not reported by FMCSA");
+ 
+ 				// --- TEA risk score & risk tier (from Supabase Edge Function) ---
+ 				let teaScore = "N/A";
+ 				let riskTier = "N/A";
+@@ -1097,10 +1202,14 @@ export class MyMCP extends McpAgent {
+ 				const summary = [
+ 					`Carrier: ${name}`,
+ 					`DOT Number: ${dot}`,
+ 					`MC Number: ${mc}`,
+-					`Authority Status: ${authority}`,
+-					`Out-of-Service Status: ${oosStatus}`,
++					`USDOT Operating Status: ${live.usdot}`,
++					`For-hire Operating Authority (MC): ${live.authority.label}`,
++					`Authority Detail (A active, I inactive, N none): ${live.authority.detail}`,
++					`Motus Registry (separate source, not used for the status above): ${live.motus}`,
++					...(live.authority.disagreement ? [`Source Note: ${live.authority.disagreement}`] : []),
++					`Out-of-Service Status: ${live.oos}`,
+ 					// Risk score: lower = safer (e.g. 15.4 is lower-risk than 23).
+ 					`TEA Risk Score (lower = safer): ${teaScore}`,
+ 					`Risk Tier: ${riskTier}`,
+ 				].join("\n");
+@@ -1137,9 +1246,10 @@ export class MyMCP extends McpAgent {
+ 
+ 				const lines: string[] = [
+ 					`TEA Carrier Vetting Scorecard — DOT ${dot_number}`,
+ 					`Legal Name: ${fmt(payload.legal_name)}`,
+-					`Status: ${fmt(payload.status)}`,
++					// Census USDOT status, not operating authority (a revoked carrier still reads "A" here).
++					`USDOT Status (census; for live MC authority run lookup_carrier): ${fmt(payload.status)}`,
+ 					`Officer: ${fmt(payload.officer)}`,
+ 					"",
+ 					`Overall TEA Score: ${fmt(payload.tea_score)}`,
+ 					`Risk Tier: ${fmt(payload.risk_tier)}`,
+@@ -1833,9 +1943,9 @@ export class MyMCP extends McpAgent {
+ 				md.push(
+ 					`- Legal Name: ${fmt(live?.name ?? inv.target_name)}`,
+ 					`- DOT Number: ${dotStr}`,
+ 					`- MC Number: ${live ? live.mc : "Live FMCSA check unavailable; run lookup_carrier"}`,
+-					`- Authority Status (live FMCSA): ${live ? live.authority : "Unavailable; run lookup_carrier"}`,
++					`- Operating Status and For-hire Authority (live FMCSA): ${live ? live.authority : "Unavailable; run lookup_carrier"}`,
+ 					`- Out-of-Service Status (live FMCSA): ${live ? live.oos : "Unavailable; run lookup_carrier"}`,
+ 					`- Principal Address: ${fmt(inv.target_address)}`,
+ 					"",
+ 				);

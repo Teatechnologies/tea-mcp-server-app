@@ -1,0 +1,23 @@
+{
+  "http": 200,
+  "fetched_at": "2026-10-08T09:43:55.561Z",
+  "body": {
+    "content": [
+      {
+        "oos": {
+          "dotNumber": 4572941,
+          "id": 406054,
+          "oosDate": "2026-10-05",
+          "oosReason": "NRC",
+          "oosReasonDescription": "New Entrant Revoked - Refusal of Audit/No Contact"
+        },
+        "_links": {
+          "self": {
+            "href": "https://mobile.fmcsa.dot.gov/qc/services/carriers/4572941/oos/406054"
+          }
+        }
+      }
+    ],
+    "retrievalDate": "2026-10-08T09:43:55.553+0000"
+  }
+}

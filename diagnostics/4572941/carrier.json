@@ -1,0 +1,94 @@
+{
+  "http": 200,
+  "fetched_at": "2026-10-08T09:43:55.506Z",
+  "body": {
+    "content": {
+      "_links": {
+        "basics": {
+          "href": "https://mobile.fmcsa.dot.gov/qc/services/carriers/4572941/basics"
+        },
+        "cargo carried": {
+          "href": "https://mobile.fmcsa.dot.gov/qc/services/carriers/4572941/cargo-carried"
+        },
+        "operation classification": {
+          "href": "https://mobile.fmcsa.dot.gov/qc/services/carriers/4572941/operation-classification"
+        },
+        "docket numbers": {
+          "href": "https://mobile.fmcsa.dot.gov/qc/services/carriers/4572941/docket-numbers"
+        },
+        "carrier active-For-hire authority": {
+          "href": "https://mobile.fmcsa.dot.gov/qc/services/carriers/4572941/authority"
+        },
+        "carrier out-of-service orders": {
+          "href": "https://mobile.fmcsa.dot.gov/qc/services/carriers/4572941/oos"
+        },
+        "self": {
+          "href": "https://mobile.fmcsa.dot.gov/qc/services/carriers/4572941"
+        }
+      },
+      "carrier": {
+        "allowedToOperate": "N",
+        "bipdInsuranceOnFile": "750",
+        "bipdInsuranceRequired": "Y",
+        "bipdRequiredAmount": "750",
+        "bondInsuranceOnFile": "0",
+        "bondInsuranceRequired": "u",
+        "brokerAuthorityStatus": "N",
+        "cargoInsuranceOnFile": "0",
+        "cargoInsuranceRequired": "u",
+        "carrierOperation": {
+          "carrierOperationCode": "A",
+          "carrierOperationDesc": "Interstate"
+        },
+        "censusTypeId": {
+          "censusType": "C",
+          "censusTypeDesc": "CARRIER",
+          "censusTypeId": 1
+        },
+        "commonAuthorityStatus": "A",
+        "contractAuthorityStatus": "N",
+        "crashTotal": 0,
+        "dbaName": null,
+        "dotNumber": 4572941,
+        "driverInsp": 0,
+        "driverOosInsp": 0,
+        "driverOosRate": 0,
+        "driverOosRateNationalAverage": "5.51",
+        "ein": 415180882,
+        "fatalCrash": 0,
+        "hazmatInsp": 0,
+        "hazmatOosInsp": 0,
+        "hazmatOosRate": 0,
+        "hazmatOosRateNationalAverage": "4.5",
+        "injCrash": 0,
+        "isPassengerCarrier": "N",
+        "issScore": null,
+        "legalName": "GREEN VALLEY TRUCKING",
+        "mcs150Outdated": "N",
+        "oosDate": "2026-10-05",
+        "oosRateNationalAverageYear": "2009-2010",
+        "phyCity": "ORLANDO",
+        "phyCountry": "US",
+        "phyState": "FL",
+        "phyStreet": "5447 GAUCHO WAY",
+        "phyZipcode": "32810",
+        "reviewDate": null,
+        "reviewType": null,
+        "safetyRating": null,
+        "safetyRatingDate": null,
+        "safetyReviewDate": null,
+        "safetyReviewType": null,
+        "snapshotDate": null,
+        "statusCode": "A",
+        "totalDrivers": 2,
+        "totalPowerUnits": 1,
+        "towawayCrash": 0,
+        "vehicleInsp": 0,
+        "vehicleOosInsp": 0,
+        "vehicleOosRate": 0,
+        "vehicleOosRateNationalAverage": "20.72"
+      }
+    },
+    "retrievalDate": "2026-10-08T09:43:55.108+0000"
+  }
+}

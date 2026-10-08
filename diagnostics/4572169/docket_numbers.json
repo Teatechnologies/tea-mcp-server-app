@@ -1,0 +1,20 @@
+{
+  "http": 200,
+  "fetched_at": "2026-10-08T09:43:55.651Z",
+  "body": {
+    "content": [
+      {
+        "docketNumber": 1818815,
+        "docketNumberId": 1871450,
+        "dotNumber": 4572169,
+        "prefix": "MC"
+      }
+    ],
+    "retrievalDate": "2026-10-08T09:43:55.644+0000",
+    "_links": {
+      "self": {
+        "href": "https://mobile.fmcsa.dot.gov/qc/services/carriers/4572169/mc-numbers"
+      }
+    }
+  }
+}

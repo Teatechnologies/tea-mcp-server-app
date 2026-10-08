@@ -1,0 +1,91 @@
+{
+  "http": 200,
+  "fetched_at": "2026-10-08T09:43:38.856Z",
+  "body": {
+    "content": {
+      "_links": {
+        "basics": {
+          "href": "https://mobile.fmcsa.dot.gov/qc/services/carriers/1947018/basics"
+        },
+        "cargo carried": {
+          "href": "https://mobile.fmcsa.dot.gov/qc/services/carriers/1947018/cargo-carried"
+        },
+        "operation classification": {
+          "href": "https://mobile.fmcsa.dot.gov/qc/services/carriers/1947018/operation-classification"
+        },
+        "docket numbers": {
+          "href": "https://mobile.fmcsa.dot.gov/qc/services/carriers/1947018/docket-numbers"
+        },
+        "carrier active-For-hire authority": {
+          "href": "https://mobile.fmcsa.dot.gov/qc/services/carriers/1947018/authority"
+        },
+        "self": {
+          "href": "https://mobile.fmcsa.dot.gov/qc/services/carriers/1947018"
+        }
+      },
+      "carrier": {
+        "allowedToOperate": "Y",
+        "bipdInsuranceOnFile": "1000",
+        "bipdInsuranceRequired": "Y",
+        "bipdRequiredAmount": "1000",
+        "bondInsuranceOnFile": "0",
+        "bondInsuranceRequired": "u",
+        "brokerAuthorityStatus": "N",
+        "cargoInsuranceOnFile": "0",
+        "cargoInsuranceRequired": "u",
+        "carrierOperation": {
+          "carrierOperationCode": "A",
+          "carrierOperationDesc": "Interstate"
+        },
+        "censusTypeId": {
+          "censusType": "C",
+          "censusTypeDesc": "CARRIER",
+          "censusTypeId": 1
+        },
+        "commonAuthorityStatus": "A",
+        "contractAuthorityStatus": "N",
+        "crashTotal": 5,
+        "dbaName": null,
+        "dotNumber": 1947018,
+        "driverInsp": 60,
+        "driverOosInsp": 0,
+        "driverOosRate": 0,
+        "driverOosRateNationalAverage": "5.51",
+        "ein": 270982779,
+        "fatalCrash": 0,
+        "hazmatInsp": 1,
+        "hazmatOosInsp": 0,
+        "hazmatOosRate": 0,
+        "hazmatOosRateNationalAverage": "4.5",
+        "injCrash": 1,
+        "isPassengerCarrier": "N",
+        "issScore": null,
+        "legalName": "QUALITY FREIGHT LLC",
+        "mcs150Outdated": "N",
+        "oosDate": null,
+        "oosRateNationalAverageYear": "2009-2010",
+        "phyCity": "ARLINGTON HEIGHTS",
+        "phyCountry": "US",
+        "phyState": "IL",
+        "phyStreet": "3315 N RIDGE AVE",
+        "phyZipcode": "60004",
+        "reviewDate": "2012-01-23",
+        "reviewType": "C",
+        "safetyRating": null,
+        "safetyRatingDate": null,
+        "safetyReviewDate": "2012-01-23",
+        "safetyReviewType": "C",
+        "snapshotDate": null,
+        "statusCode": "A",
+        "totalDrivers": 33,
+        "totalPowerUnits": 33,
+        "towawayCrash": 4,
+        "vehicleInsp": 27,
+        "vehicleOosInsp": 4,
+        "vehicleOosRate": 14.814814814814815,
+        "vehicleOosRateNationalAverage": "20.72"
+      }
+    },
+    "retrievalDate": "2026-10-08T09:43:38.784+0000"
+  }
+}

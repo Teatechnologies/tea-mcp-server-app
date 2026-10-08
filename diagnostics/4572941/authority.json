@@ -1,0 +1,30 @@
+{
+  "http": 200,
+  "fetched_at": "2026-10-08T09:43:55.524Z",
+  "body": {
+    "content": [
+      {
+        "carrierAuthority": {
+          "applicantID": 1929388,
+          "authority": "N",
+          "authorizedForBroker": "N",
+          "authorizedForHouseholdGoods": "N",
+          "authorizedForPassenger": "N",
+          "authorizedForProperty": "Y",
+          "brokerAuthorityStatus": "N",
+          "commonAuthorityStatus": "A",
+          "contractAuthorityStatus": "N",
+          "docketNumber": 1819232,
+          "dotNumber": 4572941,
+          "prefix": "MC"
+        },
+        "_links": {
+          "self": {
+            "href": "https://mobile.fmcsa.dot.gov/qc/services/carriers/4572941/authority/1929388"
+          }
+        }
+      }
+    ],
+    "retrievalDate": "2026-10-08T09:43:55.517+0000"
+  }
+}
